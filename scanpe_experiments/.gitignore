@@ -1,0 +1,14 @@
+# generated data/outputs -- not committed, too large. Re-supply the source
+# datasets (WildPPS tiles, 4KLSDB sample) separately on the training machine.
+WildPPS/
+4klsdb_sample/
+wildpps_tiles/
+scanpe_lora_out/
+scanpe_out/
+scanpe_grid_out/
+shift_sweep_out/
+shift_sweep_out2/
+shift_sweep_out3/
+*.png
+*.parquet
+*.safetensors

@@ -1,0 +1,44 @@
+# MiniMax-H3 ref2va LoRA — character sheet generation from a reference image.
+# Trains on STILL IMAGES (num_frames=1 per sample), not video clips. The
+# captions in targets_h3/ explicitly describe a static, non-moving shot so
+# that inference — which always samples on the 17n+5 video grid (min 5
+# frames) since H3 is a video model — holds those frames identical instead
+# of introducing motion the model never saw during training.
+#
+# ref2va_pruned checkpoint: reference-driven generation, pruned/int8+nvfp4
+# quantized (~39.5GB total vs ~51.7GB for the full ref2va). Chosen for
+# headroom on a 32GB card — see model_kwargs.partition below.
+#
+# Launch FROM THE ai-toolkit ROOT:
+#   python run.py config/examples/minimax_h3_ref2va_charactersheet.yaml
+job: extension
+config:
+  name: "minimax_h3_ref2va_charactersheet"
+  process:
+    - type: "sd_trainer"
+      training_folder: "output"
+      device: cuda:0
+      logging: { use_wandb: true, project_name: "minimax-h3-ref2va-charactersheet", log_every: 10 }
+      network: { type: "lora", linear: 16, linear_alpha: 16 }
+      save: { dtype: float16, save_every: 250, max_step_saves_to_keep: 8 }
+      datasets:
+        - folder_path: "data/storyboard_charactersheet_v2/targets_h3"
+          control_path: ["data/storyboard_charactersheet_v2/sources"]
+          num_repeats: 10
+          caption_ext: "txt"
+          caption_dropout_rate: 0.0
+          resolution: [512, 1024, 1280]  # 1280 = exact 1536x1024 native target res (3:2), aspect-preserved buckets
+          buckets: true
+          cache_latents_to_disk: true
+          cache_text_embeddings: false
+      train: { batch_size: 1, steps: 2000, gradient_accumulation: 1, train_unet: true,
+        train_text_encoder: false, gradient_checkpointing: true, disable_sampling: true,
+        noise_scheduler: "flowmatch", timestep_type: "weighted", optimizer: "automagic3",
+        lr: 1e-6, lr_scheduler: "constant", dtype: bf16 }
+      model: { name_or_path: "Comfy-Org/MiniMax-H3", arch: "minimax_h3",
+        quantize: true, quantize_te: true,
+        layer_offloading: true, layer_offloading_transformer_percent: 0.85,
+        layer_offloading_text_encoder_percent: 0.85,
+        model_kwargs: { partition: "ref2va_pruned" } }
+      sample: { sample_every: 100000, samples: [] }
+meta: { name: "minimax_h3_ref2va_charactersheet", version: "1.0" }

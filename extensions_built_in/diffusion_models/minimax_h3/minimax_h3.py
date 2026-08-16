@@ -1004,6 +1004,12 @@ class MinimaxH3Model(BaseModel):
                 )
 
             # --- packed layout (per item: text lengths differ) --------------
+            # ScanPE continuity training hook: a script can set
+            # model._train_scan_offsets = (t_lat, 2) before calling
+            # get_noise_prediction (no batch DTO plumbing needed) to train
+            # with a real per-frame spatial offset instead of the default
+            # stationary grid. None (default) preserves normal behavior.
+            train_scan_offsets = getattr(self, "_train_scan_offsets", None)
             layouts = []
             for i in range(batch_size):
                 layouts.append(
@@ -1015,6 +1021,7 @@ class MinimaxH3Model(BaseModel):
                         num_audio_latents=a_lat,
                         keyframe_anchors=keyframe_anchors,
                         ref_blocks=ref_blocks,
+                        spatial_offsets=train_scan_offsets,
                     )
                 )
             (

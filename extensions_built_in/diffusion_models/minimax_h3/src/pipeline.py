@@ -79,6 +79,14 @@ class MiniMaxH3Pipeline:
             list
         ] = None,  # ref2va references, already area-matched (own aspect, /32)
         with_audio: bool = True,
+        scan_offsets: Optional[torch.Tensor] = None,  # (t_lat, 2) float: ScanPE
+        # per-frame (dh, dw) offset on the TARGET video block's rotary grid.
+        # None keeps every frame on the identical stationary grid (default).
+        sigma_shift: Optional[float] = None,  # None -> VIDEO_SIGMA_SHIFT (12.0, the
+        # released video default). Video-length shift is calibrated for ~38k-token
+        # sequences; single-frame (t_lat=1, ~1k tokens) is a much shorter sequence,
+        # so the standard shift ~ sqrt(seq_len) scaling implies a far lower value
+        # for stills -- expose it here so callers can recalibrate for image mode.
         **kwargs,
     ):
         model = self.model
@@ -128,6 +136,7 @@ class MiniMaxH3Pipeline:
             latent_height=h_lat,
             latent_width=w_lat,
             num_audio_latents=a_lat,
+            spatial_offsets=scan_offsets,
             keyframe_anchors=anchors,
             ref_blocks=ref_blocks,
         )
@@ -194,12 +203,11 @@ class MiniMaxH3Pipeline:
         audio_rows = pack_audio_latents(audio_noise)  # (1, 2*A, 32)
 
         # --- schedules -----------------------------------------------------
-        sigmas_v = build_sigma_schedule(num_inference_steps, VIDEO_SIGMA_SHIFT).to(
-            device
-        )
+        video_shift = VIDEO_SIGMA_SHIFT if sigma_shift is None else sigma_shift
+        sigmas_v = build_sigma_schedule(num_inference_steps, video_shift).to(device)
         # the audio schedule follows the video grid through the closed-form
         # shift remap so both streams sit at the same underlying position
-        sigmas_a = remap_sigma(sigmas_v, VIDEO_SIGMA_SHIFT, AUDIO_SIGMA_SHIFT)
+        sigmas_a = remap_sigma(sigmas_v, video_shift, AUDIO_SIGMA_SHIFT)
 
         position_ids = layout.position_ids[None].to(device)
         tags = layout.token_tags[None].to(device)

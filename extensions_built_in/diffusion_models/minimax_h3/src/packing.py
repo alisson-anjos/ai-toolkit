@@ -297,6 +297,13 @@ def build_packed_sequence(
     patch_size=(1, 2, 2),
     keyframe_anchors: Tuple[str, ...] = (),
     ref_blocks: Tuple[Tuple[int, int, int], ...] = (),
+    spatial_offsets: Optional[torch.Tensor] = None,  # (num_latent_frames, 2) float64: (dh, dw)
+    # added per-frame to the shared frame_grid on the TARGET video block only
+    # (ScanPE: normally every frame reuses the identical frame-local grid,
+    # anchoring the model to a stationary viewport; a non-zero accumulated
+    # offset per frame turns the temporal axis into a spatial scan instead).
+    # Reference/keyframe condition rows are never offset -- they stay on
+    # their own fixed grid describing subject identity, not scan position.
 ) -> PackedLayout:
     """Build the [text | conditions | target audio | target video] layout.
 
@@ -432,7 +439,13 @@ def build_packed_sequence(
     video_pos[:, :, 0] = _temporal_position_grid(num_latent_frames, media_origin)[
         :, None
     ]
-    video_pos[:, :, 1:] = frame_grid[None]
+    if spatial_offsets is not None:
+        # ScanPE: each frame's local grid is shifted by its accumulated global
+        # scan offset instead of every frame reusing the identical grid, so
+        # the temporal axis doubles as a spatial-pan axis on the target canvas.
+        video_pos[:, :, 1:] = frame_grid[None] + spatial_offsets.to(torch.float64)[:, None, :]
+    else:
+        video_pos[:, :, 1:] = frame_grid[None]
     position_ids[video_start:] = video_pos.reshape(-1, 3)
 
     num_cond_video = sum(int(x.shape[0]) for x in cond_video_idx)
