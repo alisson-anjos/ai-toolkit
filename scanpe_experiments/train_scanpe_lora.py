@@ -38,6 +38,9 @@ STRIDE = float(packing._ROPE_SPATIAL_SCALE)
 STEPS = 300
 LR = 1e-4
 SAVE_EVERY = 100
+DO_GUIDANCE_LOSS = True
+GUIDANCE_LOSS_TARGET = 2.0
+ASSISTANT_LORA_PATH = "ostris/minimax_h3_training_adapter/minimax_h3_ref2va_training_adapter_v1.safetensors"
 
 PROMPT = """subject_definitions:
 
@@ -100,6 +103,7 @@ def main():
         layer_offloading_transformer_percent=0.97,
         layer_offloading_text_encoder_percent=0.97,
         model_kwargs={"partition": "ref2va_pruned"},
+        assistant_lora_path=ASSISTANT_LORA_PATH,
     )
     ModelClass = get_model_class(model_config)
     model = ModelClass(device="cuda:0", model_config=model_config, dtype="bf16")
@@ -139,6 +143,7 @@ def main():
     optimizer = torch.optim.AdamW(params, lr=LR)
 
     conditional_embeds = model.get_prompt_embeds(PROMPT, control_images=None)
+    unconditional_embeds = model.get_prompt_embeds("", control_images=None)
 
     t_lat = N_TILES
     offsets = torch.stack(
@@ -168,6 +173,21 @@ def main():
         target = (noise - clean).detach()
 
         model._train_scan_offsets = offsets
+        if DO_GUIDANCE_LOSS:
+            # bake a CFG-like extrapolation into the loss target itself: H3
+            # has no real CFG at inference (guidance-distilled, single
+            # forward pass), so this teaches the plain conditional
+            # prediction to already look like it had guidance_scale applied.
+            with torch.no_grad(), network:
+                uncond_pred = model.get_noise_prediction(
+                    latent_model_input=noisy,
+                    timestep=timestep,
+                    text_embeddings=unconditional_embeds,
+                    batch=None,
+                )
+            target = uncond_pred + GUIDANCE_LOSS_TARGET * (target - uncond_pred)
+            target = target.detach()
+
         with network:
             pred = model.get_noise_prediction(
                 latent_model_input=noisy,
