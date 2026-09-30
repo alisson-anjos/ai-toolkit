@@ -101,7 +101,7 @@ Embedded guide-video soundtracks can enter the audio VAE as clean conditioning r
 
 ## Prepared dataset on Hugging Face
 
-The public dataset is [Alissonerdx/h3upscale-4k](https://huggingface.co/datasets/Alissonerdx/h3upscale-4k). Check its upload status before using it: repository creation and partial commits do not imply the full dataset is available.
+The public dataset is [Alissonerdx/h3upscale-4k](https://huggingface.co/datasets/Alissonerdx/h3upscale-4k). The complete upload contains 5,120 media files with matching captions, a manifest, and an installer.
 
 Download the public dataset and restore its AI Toolkit folders:
 
