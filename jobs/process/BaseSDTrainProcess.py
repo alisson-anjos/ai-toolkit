@@ -23,6 +23,7 @@ import torch
 import torch.backends.cuda
 from huggingface_hub import HfApi, interpreter_login
 from toolkit.memory_management import MemoryManager
+from toolkit.training_oom import batch_geometry_summary, optimizer_updates_during_backward
 
 from toolkit.basic import value_map
 from toolkit.buckets import get_bucket_for_image_size
@@ -2633,8 +2634,16 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 else:
                     raise  # not an OOM; surface real errors
             if did_oom:
+                print_acc(f"OOM batch: {batch_geometry_summary(batch_list)}")
+                if optimizer_updates_during_backward(optimizer):
+                    raise RuntimeError(
+                        'OOM with an optimizer that updates during backward: '
+                        'parameters may be partially updated. Resume the last '
+                        'saved checkpoint after reducing memory use, or use '
+                        'optimizer_params.fused: false; the batch cannot be safely skipped.'
+                    )
                 self.num_consecutive_oom += 1
-                if self.num_consecutive_oom > 3:
+                if self.num_consecutive_oom >= 3:
                     raise RuntimeError("OOM during training step 3 times in a row, aborting training")
                 optimizer.zero_grad(set_to_none=True)
                 flush()

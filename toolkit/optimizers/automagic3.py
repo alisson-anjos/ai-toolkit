@@ -212,6 +212,9 @@ class Automagic3(torch.optim.Optimizer):
         super().__init__(params, defaults)
 
         self.fused = fused
+        # An OOM during backward can leave some parameters already updated;
+        # trainers must not treat this as a safely skipped optimizer step.
+        self.updates_during_backward = fused
         self._rebuild_group_index()
         self._hook_handles = []
         for group in self.param_groups:

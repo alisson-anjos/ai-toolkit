@@ -89,6 +89,7 @@ config:
           auxiliary_losses: []
           sample_audio: false
       sample:
+        neg: ""
         sampler: flowmatch
         sample_every: 25
         width: 1024

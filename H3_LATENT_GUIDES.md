@@ -97,6 +97,48 @@ LoRA metadata records the factor, conditioning flags, observed channel-role comb
 
 External integrations, including ComfyUI, need the equivalent packed layout and metadata interpretation. Loading the LoRA into an existing same-resolution AddGuide node does not automatically support downscaled guides. This patch does not modify ComfyUI.
 
+See [the ComfyUI inference contract](COMFYUI_H3_LATENT_GUIDES.md) for the audited native node, required node/model changes, and a compatibility validation checklist.
+
+## Long video training and OOM recovery
+
+Five frames is a smoke-test setting, not a three-second training clip. At 24 fps,
+73 frames is approximately three seconds; 107 is approximately 4.5 seconds and
+124 is approximately 5.2 seconds. These lengths substantially increase target
+token and activation cost. Measure a real video backward pass on the intended
+GPU before launching a long mixed image/video run. Disabling
+`shrink_video_to_frames` preserves the configured FPS for sufficiently long
+source clips; clips too short to supply that window are still stretched by the
+loader and should be checked separately.
+
+Keep `cache_latents_to_disk: true` for reusable target latents. Text embeddings
+must be cached on each dataset in latent-guide mode. Control video latents have
+their own lazy disk cache; the presence of a target cache alone does not prove
+all guide preprocessing has completed.
+
+OOM reports include each batch file, target canvas, and frame count. Automagic
+v3 with `fused: true` updates parameters during backward. An OOM can therefore
+leave partial parameter updates; clearing gradients cannot roll them back.
+The trainer stops rather than silently skipping such a batch. Resume from a
+saved checkpoint after reducing memory use, or configure
+`optimizer_params.fused: false` for conventional optimizer steps (which uses
+more gradient memory). Other optimizers can still skip recoverable OOMs and
+stop after three consecutive failures.
+
+To compare one held-out image across saved checkpoints, run:
+
+```bash
+python scripts/compare_h3_validation.py \
+  --guide /path/to/held-out-guide.jpg \
+  --samples output/your_job/samples \
+  --output output/your_job/validation_grid.png \
+  --width 1024 --height 768 --factor 4
+```
+
+The grid includes the effective reduced guide, bicubic interpolation, the
+source fitted to the output canvas, the earliest available sample, and recent
+sampled checkpoints. The fitted source is a reference target only for
+same-source upscale pairs. The script also saves the reduced guide separately.
+
 Embedded guide-video soundtracks can enter the audio VAE as clean conditioning rows. There is **no independent native-audio versus guide-audio selector or standalone audio upload for this mode yet**. A mask guide is learned conditioning, not a loss mask or an exact lock outside the mask.
 
 ## Prepared dataset on Hugging Face
