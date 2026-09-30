@@ -58,3 +58,11 @@ def add_source_phase(angles, source_values, theta=10000.0):
     rates=theta**(-torch.arange(half,device=angles.device,dtype=torch.float32)/half)
     phase=source_values.to(device=angles.device,dtype=torch.float32)[...,None]*rates
     return angles+torch.cat((phase,phase),dim=-1)
+
+
+def control_source_channels(config, count):
+    """Keep explicit channel numbers when earlier control paths are absent."""
+    channels=[i for i in (1,2,3) if getattr(config,f'control_path_{i}',None)]
+    if not channels:return list(range(1,count+1))
+    if len(channels)!=count:raise ValueError('Control channel/path counts do not match')
+    return channels

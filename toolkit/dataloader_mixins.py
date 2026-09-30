@@ -14,6 +14,7 @@ import traceback
 import cv2
 import numpy as np
 import torch
+from toolkit.h3_reference_rope import control_source_channels
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection, SiglipImageProcessor
@@ -1133,7 +1134,7 @@ class ControlFileItemDTOMixin:
             self.control_video_source_ids = []
             allow_video_controls = sd is not None and getattr(
                 sd, 'supports_video_control_images', False)
-            for source_id, control_path in enumerate(control_path_list, 1):
+            for source_id, control_path in zip(control_source_channels(dataset_config, len(control_path_list)), control_path_list):
                 for ext in img_ext_list:
                     if os.path.exists(os.path.join(control_path, file_name_no_ext + ext)):
                         found_control_images.append(os.path.join(control_path, file_name_no_ext + ext))

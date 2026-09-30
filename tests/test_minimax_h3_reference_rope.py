@@ -118,3 +118,10 @@ def test_actual_validation_pipeline_forwards_geometry_and_source_channels():
         ref_source_ids=(1,3),**options_from_kwargs(kw))
     torch.testing.assert_close(calls[0]['position_ids'][0],expected.position_ids)
     torch.testing.assert_close(calls[0]['source_phase_values'][0],expected.source_phase_values)
+
+
+def test_explicit_channels_are_not_renumbered_when_first_path_is_absent():
+    from toolkit.h3_reference_rope import control_source_channels
+    assert control_source_channels(SimpleNamespace(control_path_2='identity',control_path_3='guide'),2)==[2,3]
+    assert control_source_channels(SimpleNamespace(),2)==[1,2]
+    with pytest.raises(ValueError):control_source_channels(SimpleNamespace(control_path_3='guide'),2)
