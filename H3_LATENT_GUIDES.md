@@ -121,6 +121,14 @@ latent from disk. Older caches without this temporal information are regenerated
 their random window cannot be recovered safely. Changing `shrink_video_to_frames`
 also selects a different target cache, so guide and target keep the same clock.
 
+For long videos that still exhaust VRAM with full model layer offloading and
+gradient checkpointing, set `train.offload_saved_tensors: true`. Autograd then
+stores tensors retained for backward (including checkpoint inputs) in pinned CPU
+memory and transfers them back when needed. This keeps the target resolution,
+frame count, and existing caches, but requires more host RAM and PCIe transfers.
+It is disabled by default and does not offload optimizer state or guarantee that
+every batch will fit.
+
 OOM reports include each batch file, target canvas, and frame count. Automagic
 v3 with `fused: true` updates parameters during backward. An OOM can therefore
 leave partial parameter updates; clearing gradients cannot roll them back.

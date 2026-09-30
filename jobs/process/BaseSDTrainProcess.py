@@ -24,6 +24,7 @@ import torch.backends.cuda
 from huggingface_hub import HfApi, interpreter_login
 from toolkit.memory_management import MemoryManager
 from toolkit.training_oom import batch_geometry_summary, optimizer_updates_during_backward
+from toolkit.activation_offloading import saved_tensor_offloading
 
 from toolkit.basic import value_map
 from toolkit.buckets import get_bucket_for_image_size
@@ -2624,7 +2625,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
             did_oom = False
             loss_dict = None
             try:
-                with self.accelerator.accumulate(self.modules_being_trained):
+                with saved_tensor_offloading(self.train_config.offload_saved_tensors), self.accelerator.accumulate(self.modules_being_trained):
                     loss_dict = self.hook_train_loop(batch_list)
             except torch.cuda.OutOfMemoryError:
                 did_oom = True
