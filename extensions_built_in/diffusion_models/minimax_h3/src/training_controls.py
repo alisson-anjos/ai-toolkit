@@ -9,8 +9,8 @@ def dropout_probability(value, name):
     return float(value)
 
 
-def reference_keep_masks(batch, image_count, video_count, image_probability, video_probability):
-    signature = (image_count, video_count, image_probability, video_probability)
+def reference_keep_masks(batch, image_count, video_count, image_probability, video_probability, image_guide_flags=(), video_guide_flags=()):
+    signature = (image_count, video_count, image_probability, video_probability, tuple(image_guide_flags), tuple(video_guide_flags))
     cached = getattr(batch, '_h3_reference_keep', None)
     if cached is not None:
         if cached[0] != signature:
@@ -22,8 +22,10 @@ def reference_keep_masks(batch, image_count, video_count, image_probability, vid
         if probability == 1:
             return (False,) * count
         return tuple(bool(v) for v in torch.rand(count) >= probability)
-    images = draw(image_count, image_probability)
-    videos = draw(video_count, video_probability)
+    images = (tuple(draw(1, video_probability if guide else image_probability)[0]
+                    for guide in image_guide_flags) if image_guide_flags else draw(image_count, image_probability))
+    videos = (tuple(draw(1, video_probability if guide else image_probability)[0]
+                    for guide in video_guide_flags) if video_guide_flags else draw(video_count, video_probability))
     batch._h3_reference_keep = (signature, images, videos)
     return images, videos
 

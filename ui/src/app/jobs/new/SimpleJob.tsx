@@ -1,4 +1,5 @@
 'use client';
+import H3ControlRoleSelect from '@/components/H3ControlRoleSelect';
 import { useMemo } from 'react';
 import {
   ModelArch,
@@ -84,6 +85,7 @@ export default function SimpleJob({
   const isVideoModel = !!(modelArch?.group === 'video');
   const isMinimaxRef = modelArch?.name === 'minimax_h3_ref2va';
   const usesLatentGuides = isMinimaxRef && !!jobConfig.config.process[0].model.model_kwargs?.align_video_refs;
+  const usesUpscaleGuides = isMinimaxRef && !!jobConfig.config.process[0].model.model_kwargs?.align_image_refs;
   const isAudioModel = !!(modelArch?.group === 'audio');
   // text-generating models: samples are media in, text out (no size)
   const isLlmModel = !!(modelArch?.group === 'llm');
@@ -1224,7 +1226,7 @@ export default function SimpleJob({
                       {modelArch?.additionalSections?.includes('datasets.multi_control_paths') && (
                         <>
                           <SelectInput
-                            label={usesLatentGuides ? 'Guide Video Dataset / Reference 1' : 'Control Dataset 1'}
+                            label={usesUpscaleGuides ? 'Control Dataset 1' : usesLatentGuides ? 'Guide Video / Reference Dataset 1' : 'Control Dataset 1'}
                             docKey="datasets.multi_control_paths"
                             value={dataset.control_path_1 ?? ''}
                             className="pt-2"
@@ -1236,8 +1238,12 @@ export default function SimpleJob({
                             }
                             options={[{ value: '', label: <>&nbsp;</> }, ...datasetOptions]}
                           />
+                          {usesUpscaleGuides && (
+                            <H3ControlRoleSelect channel={1} value={dataset.control_role_1}
+                              onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].control_role_1`)} />
+                          )}
                           <SelectInput
-                            label={usesLatentGuides ? 'Reference / Guide Dataset 2' : 'Control Dataset 2'}
+                            label={'Control Dataset 2'}
                             docKey="datasets.multi_control_paths"
                             value={dataset.control_path_2 ?? ''}
                             className="pt-2"
@@ -1249,8 +1255,12 @@ export default function SimpleJob({
                             }
                             options={[{ value: '', label: <>&nbsp;</> }, ...datasetOptions]}
                           />
+                          {usesUpscaleGuides && (
+                            <H3ControlRoleSelect channel={2} value={dataset.control_role_2}
+                              onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].control_role_2`)} />
+                          )}
                           <SelectInput
-                            label={usesLatentGuides ? 'Reference / Mask Guide Dataset 3' : 'Control Dataset 3'}
+                            label={'Control Dataset 3'}
                             docKey="datasets.multi_control_paths"
                             value={dataset.control_path_3 ?? ''}
                             className="pt-2"
@@ -1262,9 +1272,13 @@ export default function SimpleJob({
                             }
                             options={[{ value: '', label: <>&nbsp;</> }, ...datasetOptions]}
                           />
+                          {usesUpscaleGuides && (
+                            <H3ControlRoleSelect channel={3} value={dataset.control_role_3}
+                              onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].control_role_3`)} />
+                          )}
                           {usesLatentGuides && (
                             <p className="pt-2 text-sm text-gray-400">
-                              Video controls are aligned latent guides; images remain native references.
+                              {usesUpscaleGuides ? 'Choose each channel’s role above. Guide latents accept images or videos; native references keep their own layout.' : 'Video controls are aligned latent guides; images remain native references.'}
                               Add an optional mask video in another channel, paired by filename with the target.
                               Use the same channels and mask convention in training and sampling.
                             </p>
@@ -1920,12 +1934,12 @@ export default function SimpleJob({
                         </div>
                       </div>
                       {modelArch?.additionalSections?.includes('datasets.multi_control_paths') && (
-                        <FormGroup label={usesLatentGuides ? 'Guide Videos, References & Masks' : 'Control Images'} className="pt-2 ml-4">
+                        <FormGroup label={usesLatentGuides ? 'Guide Images / Videos, References & Masks' : 'Control Images'} className="pt-2 ml-4">
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-2 mt-2">
                             {['ctrl_img_1', 'ctrl_img_2', 'ctrl_img_3'].map((ctrlKey, ctrl_idx) => (
+                              <div key={ctrlKey}>
                               <SampleControlImage
-                                key={ctrlKey}
-                                instruction={usesLatentGuides ? `Add Guide / Reference ${ctrl_idx + 1}` : `Add Control Image ${ctrl_idx + 1}`}
+                                instruction={usesLatentGuides ? `Add Control ${ctrl_idx + 1}` : `Add Control Image ${ctrl_idx + 1}`}
                                 className=""
                                 src={sample[ctrlKey as keyof typeof sample] as string}
                                 onNewImageSelected={imagePath => {
@@ -1938,6 +1952,12 @@ export default function SimpleJob({
                                   }
                                 }}
                               />
+                              {usesUpscaleGuides && (
+                                <H3ControlRoleSelect channel={ctrl_idx + 1}
+                                  value={sample[`ctrl_role_${ctrl_idx + 1}` as keyof typeof sample] as 'guide' | 'reference' | undefined}
+                                  onChange={value => setJobConfig(value, `config.process[0].sample.samples[${i}].ctrl_role_${ctrl_idx + 1}`)} />
+                              )}
+                              </div>
                             ))}
                           </div>
                         </FormGroup>

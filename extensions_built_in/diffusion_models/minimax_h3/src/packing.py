@@ -354,7 +354,7 @@ def build_packed_sequence(
     # a ref block is (t_lat, h, w) or (t_lat, h, w, audio_latents): a video
     # reference's soundtrack packs as clean audio rows immediately BEFORE its
     # own video rows
-    ref_blocks = tuple(tuple(b) + (0,) * (4 - len(b)) for b in ref_blocks)
+    ref_blocks = tuple(tuple(b[:4]) + (0,) * max(0, 4 - len(b)) for b in ref_blocks)
     aligned_flags = tuple(aligned_refs) + (False,) * (len(ref_blocks) - len(aligned_refs))
     if len(aligned_flags) != len(ref_blocks):
         raise ValueError(

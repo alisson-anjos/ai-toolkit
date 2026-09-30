@@ -617,12 +617,14 @@ class BaseModel:
                         # load the control image if out model uses it in text encoding
                         if has_control_images and self.encode_control_in_text_embeddings:
                             ctrl_img_list = []
+                            skip_text_slots = (self.sample_text_control_skip_slots(gen_config)
+                                               if hasattr(self, 'sample_text_control_skip_slots') else set())
                     
-                            if gen_config.ctrl_img is not None and os.path.splitext(str(gen_config.ctrl_img))[1].lower() in ['.mp4', '.avi', '.mov', '.webm', '.mkv', '.wmv', '.m4v', '.flv']:
+                            if gen_config.ctrl_img is not None and "ctrl_img" not in skip_text_slots and os.path.splitext(str(gen_config.ctrl_img))[1].lower() in ['.mp4', '.avi', '.mov', '.webm', '.mkv', '.wmv', '.m4v', '.flv']:
                                 # control VIDEO: pass the path through; models with
                                 # supports_video_control_images handle it in get_prompt_embeds
                                 ctrl_img_list.append(str(gen_config.ctrl_img))
-                            elif gen_config.ctrl_img is not None:
+                            elif gen_config.ctrl_img is not None and "ctrl_img" not in skip_text_slots:
                                 ctrl_img = Image.open(gen_config.ctrl_img).convert("RGB")
                                 # convert to 0 to 1 tensor
                                 ctrl_img = (
@@ -632,11 +634,11 @@ class BaseModel:
                                 )
                                 ctrl_img_list.append(ctrl_img)
                             
-                            if gen_config.ctrl_img_1 is not None and os.path.splitext(str(gen_config.ctrl_img_1))[1].lower() in ['.mp4', '.avi', '.mov', '.webm', '.mkv', '.wmv', '.m4v', '.flv']:
+                            if gen_config.ctrl_img_1 is not None and "ctrl_img_1" not in skip_text_slots and os.path.splitext(str(gen_config.ctrl_img_1))[1].lower() in ['.mp4', '.avi', '.mov', '.webm', '.mkv', '.wmv', '.m4v', '.flv']:
                                 # control VIDEO: pass the path through; models with
                                 # supports_video_control_images handle it in get_prompt_embeds
                                 ctrl_img_list.append(str(gen_config.ctrl_img_1))
-                            elif gen_config.ctrl_img_1 is not None:
+                            elif gen_config.ctrl_img_1 is not None and "ctrl_img_1" not in skip_text_slots:
                                 ctrl_img_1 = Image.open(gen_config.ctrl_img_1).convert("RGB")
                                 # convert to 0 to 1 tensor
                                 ctrl_img_1 = (
@@ -645,11 +647,11 @@ class BaseModel:
                                     .to(self.device_torch, dtype=self.torch_dtype)
                                 )
                                 ctrl_img_list.append(ctrl_img_1)
-                            if gen_config.ctrl_img_2 is not None and os.path.splitext(str(gen_config.ctrl_img_2))[1].lower() in ['.mp4', '.avi', '.mov', '.webm', '.mkv', '.wmv', '.m4v', '.flv']:
+                            if gen_config.ctrl_img_2 is not None and "ctrl_img_2" not in skip_text_slots and os.path.splitext(str(gen_config.ctrl_img_2))[1].lower() in ['.mp4', '.avi', '.mov', '.webm', '.mkv', '.wmv', '.m4v', '.flv']:
                                 # control VIDEO: pass the path through; models with
                                 # supports_video_control_images handle it in get_prompt_embeds
                                 ctrl_img_list.append(str(gen_config.ctrl_img_2))
-                            elif gen_config.ctrl_img_2 is not None:
+                            elif gen_config.ctrl_img_2 is not None and "ctrl_img_2" not in skip_text_slots:
                                 ctrl_img_2 = Image.open(gen_config.ctrl_img_2).convert("RGB")
                                 # convert to 0 to 1 tensor
                                 ctrl_img_2 = (
@@ -658,11 +660,11 @@ class BaseModel:
                                     .to(self.device_torch, dtype=self.torch_dtype)
                                 )
                                 ctrl_img_list.append(ctrl_img_2)
-                            if gen_config.ctrl_img_3 is not None and os.path.splitext(str(gen_config.ctrl_img_3))[1].lower() in ['.mp4', '.avi', '.mov', '.webm', '.mkv', '.wmv', '.m4v', '.flv']:
+                            if gen_config.ctrl_img_3 is not None and "ctrl_img_3" not in skip_text_slots and os.path.splitext(str(gen_config.ctrl_img_3))[1].lower() in ['.mp4', '.avi', '.mov', '.webm', '.mkv', '.wmv', '.m4v', '.flv']:
                                 # control VIDEO: pass the path through; models with
                                 # supports_video_control_images handle it in get_prompt_embeds
                                 ctrl_img_list.append(str(gen_config.ctrl_img_3))
-                            elif gen_config.ctrl_img_3 is not None:
+                            elif gen_config.ctrl_img_3 is not None and "ctrl_img_3" not in skip_text_slots:
                                 ctrl_img_3 = Image.open(gen_config.ctrl_img_3).convert("RGB")
                                 # convert to 0 to 1 tensor
                                 ctrl_img_3 = (

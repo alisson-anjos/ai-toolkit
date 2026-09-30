@@ -122,7 +122,9 @@ class MiniMaxH3Pipeline:
                 lat = r["latent"]
                 a = r.get("audio_rows")
                 a_lat = int(a.shape[0]) // 2 if a is not None else 0
-                ref_blocks.append((lat.shape[1], lat.shape[2], lat.shape[3], a_lat))
+                ref_blocks.append((lat.shape[1], lat.shape[2], lat.shape[3], a_lat, True)
+                                  if r.get("aligned") else (lat.shape[1], lat.shape[2], lat.shape[3], a_lat, False)
+                                  if "aligned" in r else (lat.shape[1], lat.shape[2], lat.shape[3], a_lat))
             elif isinstance(r, torch.Tensor):
                 ref_blocks.append((r.shape[1], r.shape[2], r.shape[3]))
             else:

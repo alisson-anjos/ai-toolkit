@@ -135,6 +135,9 @@ export interface DatasetConfig {
   control_path_1?: string | null;
   control_path_2?: string | null;
   control_path_3?: string | null;
+  control_role_1?: 'guide' | 'reference';
+  control_role_2?: 'guide' | 'reference';
+  control_role_3?: 'guide' | 'reference';
   auto_frame_count?: boolean;
 }
 
@@ -238,6 +241,9 @@ export interface SampleItem {
   ctrl_img_1?: string | null;
   ctrl_img_2?: string | null;
   ctrl_img_3?: string | null;
+  ctrl_role_1?: 'guide' | 'reference';
+  ctrl_role_2?: 'guide' | 'reference';
+  ctrl_role_3?: 'guide' | 'reference';
 }
 
 export interface SampleConfig {

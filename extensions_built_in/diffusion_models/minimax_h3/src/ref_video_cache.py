@@ -15,6 +15,9 @@ import hashlib
 import json
 import os
 
+from toolkit.aligned_guides import prepare_guide_image, spatial_signature
+from PIL import Image
+
 import cv2
 import numpy as np
 import torch
@@ -170,6 +173,7 @@ def load_ref_video_latent(
     model, path: str, dataset_config, target_height: int, target_width: int,
     align: bool = False,
     reference_downscale_factor: int = 1,
+    file_item=None,
 ) -> dict:
     """Returns {"latent": (C, T, h, w) cpu tensor, "num_frames": int},
     encoding + disk-caching on first use. ``model`` is the MinimaxH3 model
@@ -187,7 +191,14 @@ def load_ref_video_latent(
     # run, and a path-only key handed back whatever size happened to be encoded first.
     # Unaligned that passed silently (the guide just sat on a wrong grid, and cost whatever
     # its own size cost); aligned it raises "must share the target's latent resolution".
-    mem_key = (path, int(target_height), int(target_width), bool(align), factor)
+    crop_signature = spatial_signature(file_item) if align else None
+    target_indices = getattr(file_item, "video_frame_indices", None) if align else None
+    target_fps = getattr(file_item, "video_source_fps", None) if align else None
+    temporal_signature = (getattr(dataset_config, "num_frames", None), dataset_config.fps,
+                          dataset_config.auto_frame_count, dataset_config.trim_auto_frame_count_tail,
+                          tuple(target_indices) if target_indices else None, target_fps)
+    mem_key = (path, int(target_height), int(target_width), bool(align), factor,
+               crop_signature, temporal_signature)
     if mem_key in mem_cache:
         return mem_cache[mem_key]
 
@@ -216,7 +227,10 @@ def load_ref_video_latent(
         # an aligned guide is resized to the target's EXACT grid, so the cache key
         # needs the dimensions, not just the area -- two buckets with the same area
         # and different aspects are different tensors here
-        "ref_sizing": "match_target_exact" if align else "match_target_area",
+        "ref_sizing": "target_crop_v2" if align else "match_target_area",
+        "crop_signature": crop_signature,
+        "target_indices": target_indices,
+        "target_fps": target_fps,
         "reference_downscale_factor": factor,
         "target_area": int(target_height * target_width)
         if target_height and target_width
@@ -253,6 +267,12 @@ def load_ref_video_latent(
     indices = ref_frame_indices(
         total, src_fps, num_frames, dataset_config.fps, trim_tail
     )
+    if align and target_indices:
+        rate = src_fps / target_fps if target_fps and target_fps > 0 else 1.0
+        indices = [min(round(i * rate), total - 1) for i in target_indices]
+        num_frames = len(indices)
+    elif align and not trim_tail and not getattr(dataset_config, "shrink_video_to_frames", True):
+        raise ValueError("Aligned guides need target frame indices for random video windows; use shrink_video_to_frames or cache target frame indices")
     try:
         raw_frames = read_frames_at(cap, indices)
     except ValueError as e:
@@ -261,7 +281,11 @@ def load_ref_video_latent(
     frames = []
     for frame in raw_frames:
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+        if align:
+            frame = np.asarray(prepare_guide_image(Image.fromarray(frame), target_height,
+                                                  target_width, factor, file_item))
+        else:
+            frame = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
         frames.append(frame)
 
     pixels = torch.from_numpy(np.stack(frames)).float() / 255.0 * 2.0 - 1.0

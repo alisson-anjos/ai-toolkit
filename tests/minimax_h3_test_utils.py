@@ -6,9 +6,18 @@ coverage from heavyweight model-loading dependencies; it is not a training test.
 import ast
 import importlib.util
 import sys
+from PIL import Image
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+helper_spec = importlib.util.spec_from_file_location('_h3_aligned_guides', ROOT / 'toolkit/aligned_guides.py')
+aligned_guides = importlib.util.module_from_spec(helper_spec)
+helper_spec.loader.exec_module(aligned_guides)
+prepare_guide_image = aligned_guides.prepare_guide_image
+spatial_signature = aligned_guides.spatial_signature
+image_guide_channel = aligned_guides.image_guide_channel
+is_image_guide = aligned_guides.is_image_guide
 MODEL = ROOT / 'extensions_built_in/diffusion_models/minimax_h3/minimax_h3.py'
 SRC = MODEL.parent / 'src'
 
@@ -29,4 +38,6 @@ def source_function(path, name, namespace, class_name=None):
 
 
 def model_method(name, class_name='MinimaxH3Model', **namespace):
-    return source_function(MODEL, name, {'packing': packing, **namespace}, class_name)
+    return source_function(MODEL, name, {'packing': packing, 'Image': Image, 'prepare_guide_image': prepare_guide_image,
+                                          'spatial_signature': spatial_signature, 'image_guide_channel': image_guide_channel,
+                                          'is_image_guide': is_image_guide, **namespace}, class_name)

@@ -65,6 +65,8 @@ class SampleItem:
         self.ctrl_img_1: Optional[str] = kwargs.get('ctrl_img_1', self.ctrl_img)
         self.ctrl_img_2: Optional[str] = kwargs.get('ctrl_img_2', None)
         self.ctrl_img_3: Optional[str] = kwargs.get('ctrl_img_3', None)
+        for channel in (1, 2, 3):
+            setattr(self, f'ctrl_role_{channel}', kwargs.get(f'ctrl_role_{channel}', None))
         
         self.network_multiplier: float = kwargs.get('network_multiplier', sample_config.network_multiplier)
         # convert to a number if it is a string
@@ -973,9 +975,14 @@ class DatasetConfig:
             self.control_path = None
         
         # handle multi control inputs from the ui. It is just easier to handle it here for a cleaner ui experience
-        control_path_1 = kwargs.get('control_path_1', None)
-        control_path_2 = kwargs.get('control_path_2', None)
-        control_path_3 = kwargs.get('control_path_3', None)
+        self.control_path_1 = control_path_1 = kwargs.get('control_path_1', None)
+        self.control_path_2 = control_path_2 = kwargs.get('control_path_2', None)
+        self.control_path_3 = control_path_3 = kwargs.get('control_path_3', None)
+        for channel in (1, 2, 3):
+            role = kwargs.get(f'control_role_{channel}', None)
+            if role not in (None, 'guide', 'reference'):
+                raise ValueError('Control roles must be guide or reference')
+            setattr(self, f'control_role_{channel}', role)
         
         if any([control_path_1, control_path_2, control_path_3]):
             control_paths = []
@@ -1161,6 +1168,9 @@ class GenerateImageConfig:
             duration: Optional[float] = None,  # audio models: max seconds
             ctrl_idx: int = 0,
             do_cfg_norm: bool = False,
+            ctrl_role_1: Optional[str] = None,
+            ctrl_role_2: Optional[str] = None,
+            ctrl_role_3: Optional[str] = None,
     ):
         self.width: int = width
         self.height: int = height
@@ -1201,6 +1211,9 @@ class GenerateImageConfig:
         self.ctrl_img_1 = ctrl_img_1
         self.ctrl_img_2 = ctrl_img_2
         self.ctrl_img_3 = ctrl_img_3
+        self.ctrl_role_1 = ctrl_role_1
+        self.ctrl_role_2 = ctrl_role_2
+        self.ctrl_role_3 = ctrl_role_3
 
         # prompt string will override any settings above
         self._process_prompt_string()

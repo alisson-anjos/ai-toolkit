@@ -612,6 +612,8 @@ class ImageProcessingDTOMixin:
             # Final safety check - ensure no frame exceeds max valid index
             frames_to_extract = [min(frame_idx, max_frame_index) for frame_idx in frames_to_extract]
             
+            self.video_frame_indices = tuple(frames_to_extract)
+            self.video_source_fps = video_fps
             # Only log frames to extract if in debug mode
             if hasattr(self.dataset_config, 'debug') and self.dataset_config.debug:
                 print_acc(f"  Frames to extract: {frames_to_extract}")
@@ -1145,6 +1147,18 @@ class ControlFileItemDTOMixin:
             # control VIDEO paths ride on the item; the model encodes and
             # disk-caches them on first use (see minimax_h3 ref2va)
             self.control_video_paths = found_control_videos or None
+            self.aligned_image_guide_flags = [
+                bool(sd is not None and hasattr(sd, 'is_aligned_image_guide')
+                     and sd.is_aligned_image_guide(path, dataset_config))
+                for path in found_control_images]
+            self.aligned_video_guide_flags = [
+                bool(sd is not None and hasattr(sd, 'is_aligned_video_guide')
+                     and sd.is_aligned_video_guide(path, dataset_config)) for path in found_control_videos]
+            if sd is not None and hasattr(sd, 'register_dataset_control_roles'):
+                sd.register_dataset_control_roles(dataset_config)
+            self._aligned_image_guide_factor = sd._reference_downscale_factor() if any(self.aligned_image_guide_flags) else None
+            if self._aligned_image_guide_factor is not None and not dataset_config.cache_text_embeddings:
+                raise ValueError('Aligned image guides require cache_text_embeddings: true; enable Cache Text Embeddings in the UI')
             self.control_path = found_control_images
             if len(self.control_path) == 0:
                 self.control_path = None
@@ -1183,7 +1197,7 @@ class ControlFileItemDTOMixin:
         # from the ref-video cache, not this image loader)
         control_path_list = [p for p in control_path_list if p is not None]
         
-        for control_path in control_path_list:
+        for control_index, control_path in enumerate(control_path_list):
             try:
                 img = Image.open(control_path)
                 img = exif_transpose(img)
@@ -1206,7 +1220,11 @@ class ControlFileItemDTOMixin:
                 print_acc(f"Error: {e}")
                 print_acc(f"Error loading image: {control_path}")
             
-            if not self.full_size_control_images:
+            aligned_guide = (getattr(self, 'aligned_image_guide_flags', []) or [False] * len(control_path_list))[control_index]
+            if aligned_guide:
+                from toolkit.aligned_guides import prepare_guide_image
+                img = prepare_guide_image(img, self.crop_height, self.crop_width, self._aligned_image_guide_factor, self)
+            elif not self.full_size_control_images:
                 # we just scale them to 512x512:
                 w, h = img.size
                 img = img.resize((512, 512), Image.BICUBIC)
@@ -2250,10 +2268,12 @@ class TextEmbeddingFileItemDTOMixin:
         # if we have a control image, cache the path
         if self.encode_control_in_text_embeddings and self.control_path is not None:
             item["control_path"] = self.control_path
+            item["aligned_image_guide_flags"] = getattr(self, 'aligned_image_guide_flags', [])
             if getattr(self, 'text_embedding_uses_target_size', False) and getattr(self, 'crop_width', None):
                 item["control_target_size"] = [self.crop_width, self.crop_height]
         if self.encode_control_in_text_embeddings and getattr(self, 'control_video_paths', None):
             item["control_videos"] = sorted(self.control_video_paths)
+            item["aligned_video_guide_flags"] = getattr(self, 'aligned_video_guide_flags', [])
             # v2: reference-video vision blocks are no longer resampled by the
             # processor (do_sample_frames=False); older video-ref embeds are
             # misaligned with their presentation. Only items WITH control
@@ -2481,6 +2501,8 @@ class TextEmbeddingCachingMixin:
                         elif not isinstance(control_path_list, list):
                             control_path_list = [control_path_list]
                         for i in range(len(control_path_list)):
+                            if i < len(getattr(file_item, 'aligned_image_guide_flags', [])) and file_item.aligned_image_guide_flags[i]:
+                                continue
                             try:
                                 img = Image.open(control_path_list[i]).convert("RGB")
                                 img = exif_transpose(img)
@@ -2499,8 +2521,14 @@ class TextEmbeddingCachingMixin:
                         # timestamped vision blocks); images first, then videos.
                         # The model needs the dataset config to treat the clip
                         # exactly like its latent rows (frame count / trim)
+                        video_flags = getattr(file_item, 'aligned_video_guide_flags', [])
+                        native_video_paths = [path for index, path in enumerate(control_video_paths)
+                                              if index < len(video_flags) and not video_flags[index]]
+                        self.sd._native_video_ref_paths = set(native_video_paths)
                         if not getattr(file_item, 'guide_latent_only', False):
                             ctrl_img_list.extend(control_video_paths)
+                        else:
+                            ctrl_img_list.extend(native_video_paths)
                         if len(control_video_paths) > 0:
                             self.sd._ref_video_dataset_config = self.dataset_config
                         

@@ -176,6 +176,9 @@ class SDTrainer(BaseSDTrainProcess):
                     ctrl_img_1=sample_item.ctrl_img_1,
                     ctrl_img_2=sample_item.ctrl_img_2,
                     ctrl_img_3=sample_item.ctrl_img_3,
+                ctrl_role_1=getattr(sample_item, 'ctrl_role_1', None),
+                ctrl_role_2=getattr(sample_item, 'ctrl_role_2', None),
+                ctrl_role_3=getattr(sample_item, 'ctrl_role_3', None),
                 )
                 
                 has_control_images = False
@@ -191,12 +194,14 @@ class SDTrainer(BaseSDTrainProcess):
                         return os.path.splitext(str(pth))[1].lower() in video_exts
 
                     ctrl_img_list = []
+                    skip_text_slots = (self.sd.sample_text_control_skip_slots(gen_img_config)
+                                       if hasattr(self.sd, 'sample_text_control_skip_slots') else set())
                     
-                    if gen_img_config.ctrl_img is not None and _is_ctrl_video(gen_img_config.ctrl_img):
+                    if gen_img_config.ctrl_img is not None and "ctrl_img" not in skip_text_slots and _is_ctrl_video(gen_img_config.ctrl_img):
                         # control VIDEO: pass the path through; models with
                         # supports_video_control_images handle it in get_prompt_embeds
                         ctrl_img_list.append(str(gen_img_config.ctrl_img))
-                    elif gen_img_config.ctrl_img is not None:
+                    elif gen_img_config.ctrl_img is not None and "ctrl_img" not in skip_text_slots:
                         ctrl_img = Image.open(gen_img_config.ctrl_img).convert("RGB")
                         # convert to 0 to 1 tensor
                         ctrl_img = (
@@ -206,11 +211,11 @@ class SDTrainer(BaseSDTrainProcess):
                         )
                         ctrl_img_list.append(ctrl_img)
                     
-                    if gen_img_config.ctrl_img_1 is not None and _is_ctrl_video(gen_img_config.ctrl_img_1):
+                    if gen_img_config.ctrl_img_1 is not None and "ctrl_img_1" not in skip_text_slots and _is_ctrl_video(gen_img_config.ctrl_img_1):
                         # control VIDEO: pass the path through; models with
                         # supports_video_control_images handle it in get_prompt_embeds
                         ctrl_img_list.append(str(gen_img_config.ctrl_img_1))
-                    elif gen_img_config.ctrl_img_1 is not None:
+                    elif gen_img_config.ctrl_img_1 is not None and "ctrl_img_1" not in skip_text_slots:
                         ctrl_img_1 = Image.open(gen_img_config.ctrl_img_1).convert("RGB")
                         # convert to 0 to 1 tensor
                         ctrl_img_1 = (
@@ -219,11 +224,11 @@ class SDTrainer(BaseSDTrainProcess):
                             .to(self.sd.device_torch, dtype=self.sd.torch_dtype)
                         )
                         ctrl_img_list.append(ctrl_img_1)
-                    if gen_img_config.ctrl_img_2 is not None and _is_ctrl_video(gen_img_config.ctrl_img_2):
+                    if gen_img_config.ctrl_img_2 is not None and "ctrl_img_2" not in skip_text_slots and _is_ctrl_video(gen_img_config.ctrl_img_2):
                         # control VIDEO: pass the path through; models with
                         # supports_video_control_images handle it in get_prompt_embeds
                         ctrl_img_list.append(str(gen_img_config.ctrl_img_2))
-                    elif gen_img_config.ctrl_img_2 is not None:
+                    elif gen_img_config.ctrl_img_2 is not None and "ctrl_img_2" not in skip_text_slots:
                         ctrl_img_2 = Image.open(gen_img_config.ctrl_img_2).convert("RGB")
                         # convert to 0 to 1 tensor
                         ctrl_img_2 = (
@@ -232,11 +237,11 @@ class SDTrainer(BaseSDTrainProcess):
                             .to(self.sd.device_torch, dtype=self.sd.torch_dtype)
                         )
                         ctrl_img_list.append(ctrl_img_2)
-                    if gen_img_config.ctrl_img_3 is not None and _is_ctrl_video(gen_img_config.ctrl_img_3):
+                    if gen_img_config.ctrl_img_3 is not None and "ctrl_img_3" not in skip_text_slots and _is_ctrl_video(gen_img_config.ctrl_img_3):
                         # control VIDEO: pass the path through; models with
                         # supports_video_control_images handle it in get_prompt_embeds
                         ctrl_img_list.append(str(gen_img_config.ctrl_img_3))
-                    elif gen_img_config.ctrl_img_3 is not None:
+                    elif gen_img_config.ctrl_img_3 is not None and "ctrl_img_3" not in skip_text_slots:
                         ctrl_img_3 = Image.open(gen_img_config.ctrl_img_3).convert("RGB")
                         # convert to 0 to 1 tensor
                         ctrl_img_3 = (

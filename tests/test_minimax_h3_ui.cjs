@@ -52,7 +52,7 @@ assert.equal(mode.getValue(config), 'guide');
 assert.equal(factor.getValue(config), '2');
 assert.equal(factor.disabled(config), false);
 assert.deepEqual(config.config.process[0].model.model_kwargs, {
-  partition: 'ref2va_pruned', align_video_refs: true, control_latent_only: false,
+  partition: 'ref2va_pruned', align_video_refs: true, align_image_refs: false, image_guide_channel: 1, control_latent_only: false,
   guide_latent_only: true, reference_downscale_factor: 2, reference_dropout: 0,
 });
 mode.onChange('all_latent', config, set);
@@ -109,8 +109,8 @@ function findLabel(tree, label) {
 const render = () => component({jobConfig: config, setJobConfig: set});
 mode.onChange('all_latent', config, set);
 let view = render();
-findLabel(view, 'Image Reference Dropout').props.onChange(0.3);
-findLabel(view, 'Video Guide Dropout').props.onChange(0.1);
+findLabel(view, 'Native Reference Dropout').props.onChange(0.3);
+findLabel(view, 'Image / Video Guide Dropout').props.onChange(0.1);
 assert.equal(config.config.process[0].model.model_kwargs.reference_dropout, 0.3);
 assert.equal(config.config.process[0].model.model_kwargs.guide_dropout, 0.1);
 findLabel(view, 'Additional Training Objectives').props.onChange(['pixel_l1', 'arcface', 'pose_heatmap']);
@@ -132,5 +132,24 @@ assert.equal(config.config.process[0].model.model_kwargs.auxiliary_losses[0].wei
 assert.equal(config.config.process[0].model.model_kwargs.auxiliary_losses[0].model_path, '/models/arcface.pt');
 mode.onChange('reference', config, set);
 assert.equal(config.config.process[0].model.model_kwargs.reference_dropout, 0);
-assert.equal(findLabel(render(), 'Image Reference Dropout').props.disabled, true);
+assert.equal(findLabel(render(), 'Native Reference Dropout').props.disabled, true);
 console.log('UI dropout, combined custom losses, weights, evaluator paths, and face crop passed.');
+
+// Per-dataset and per-sample roles are explicit and survive mode changes.
+mode.onChange('upscale', config, set);
+assert.equal(mode.getValue(config), 'upscale');
+assert.equal(config.config.process[0].model.model_kwargs.align_image_refs, true);
+assert.equal(config.config.process[0].datasets[0].cache_text_embeddings, true);
+const roleComponent = load('ui/src/components/H3ControlRoleSelect.tsx').default;
+let selectedRole;
+let roleView = roleComponent({channel: 1, onChange: value => { selectedRole = value; }});
+assert.equal(findLabel(roleView, 'Channel 1 Role').props.value, 'guide');
+findLabel(roleView, 'Channel 1 Role').props.onChange('reference');
+assert.equal(selectedRole, 'reference');
+roleView = roleComponent({channel: 2, value: 'guide', onChange: () => {}});
+assert.equal(findLabel(roleView, 'Channel 2 Role').props.value, 'guide');
+assert.equal(roleComponent({channel: 3, onChange: () => {}}).props.children[0].props.value, 'reference');
+const jobSource = fs.readFileSync(path.join(root, 'ui/src/app/jobs/new/SimpleJob.tsx'), 'utf8');
+for (const channel of [1, 2, 3]) assert.ok(jobSource.includes('datasets[${i}].control_role_' + channel));
+assert.ok(jobSource.includes('ctrl_role_${ctrl_idx + 1}'));
+console.log('UI image/video guide mode and explicit native/guide role selectors passed.');

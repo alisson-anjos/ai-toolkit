@@ -66,6 +66,7 @@ from toolkit.samplers.custom_flowmatch_sampler import (
 )
 
 from .src import packing
+from toolkit.aligned_guides import image_guide_channel, is_image_guide, prepare_guide_image
 
 packing_video_exts = [".mp4", ".avi", ".mov", ".webm", ".mkv", ".wmv", ".m4v", ".flv"]
 from .src.audio_vae import MiniMaxH3AudioVAE
@@ -752,6 +753,8 @@ class MinimaxH3Model(BaseModel):
         if not getattr(self, "guide_latent_only", False) or controls is None:
             return controls
         if isinstance(controls, str):
+            if controls in getattr(self, '_native_video_ref_paths', set()):
+                return controls
             return None if os.path.splitext(controls)[1].lower() in packing_video_exts else controls
         if isinstance(controls, (list, tuple)):
             filtered = [self._text_control_images(control) for control in controls]
@@ -763,8 +766,8 @@ class MinimaxH3Model(BaseModel):
         factor = packing.validate_reference_downscale_factor(
             kw.get("reference_downscale_factor", 1)
         )
-        if factor > 1 and not kw.get("align_video_refs", False):
-            raise ValueError("reference_downscale_factor > 1 requires align_video_refs: true")
+        if factor > 1 and not (kw.get("align_video_refs", False) or kw.get("align_image_refs", False)):
+            raise ValueError("reference_downscale_factor > 1 requires aligned video or image guides")
         if factor > 1 and (kw.get("dopsd", False) or kw.get("image_refs_as_video", False)):
             raise ValueError(
                 "reference_downscale_factor > 1 cannot be combined with "
@@ -778,16 +781,16 @@ class MinimaxH3Model(BaseModel):
         With ``align_video_refs`` a *video* reference stops being a loose reference and
         becomes a v2v guide: same rotary clock, same spatial grid as the target, so guide
         frame ``i`` drives output frame ``i`` without the model having to search for the
-        correspondence. Image references are never aligned — an identity photo has no
+        correspondence. Only explicitly marked image guides are aligned; an identity photo has no
         spatial correspondence with the output and should not claim one.
 
         A head-swap pack is exactly this pair: aligned driving video, unaligned identity.
         """
-        if not ref_blocks or not self.model_config.model_kwargs.get(
+        if not ref_blocks or not (self.model_config.model_kwargs.get(
             "align_video_refs", False
-        ):
+        ) or self.model_config.model_kwargs.get("align_image_refs", False)):
             return ()
-        return tuple(block[0] > 1 for block in ref_blocks)
+        return tuple(bool(block[4]) if len(block) > 4 else bool(self.model_config.model_kwargs.get("align_video_refs")) and block[0] > 1 for block in ref_blocks)
 
     def _build_condition(
         self, batch: "DataLoaderBatchDTO", latent_shape, device, dtype
@@ -1202,8 +1205,58 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
             # embeds drop the control media entirely -> different space
             return f"{base}:ctrl_latent_only"
         if getattr(self, "guide_latent_only", False):
-            return f"{base}:guide_latent_only"
+            kw = getattr(getattr(self, "model_config", None), "model_kwargs", {})
+            suffix = f":image_guide{image_guide_channel(kw)}" if kw.get('align_image_refs') else ''
+            return f"{base}:guide_latent_only{suffix}"
         return base
+
+    def is_aligned_image_guide(self, path, dataset_config):
+        return is_image_guide(path, dataset_config, self.model_config.model_kwargs)
+
+    def prepare_aligned_image_guide(self, image, item):
+        return prepare_guide_image(image, item.crop_height, item.crop_width,
+                                   self._reference_downscale_factor(), item)
+
+    def is_aligned_video_guide(self, path, dataset_config):
+        if self.model_config.model_kwargs.get("align_image_refs"):
+            return self.is_aligned_image_guide(path, dataset_config)
+        return bool(self.model_config.model_kwargs.get("align_video_refs"))
+
+    def register_dataset_control_roles(self, config):
+        if not self.model_config.model_kwargs.get("align_image_refs"):
+            return
+        if not config.cache_text_embeddings:
+            raise ValueError('Latent image/video guide mode requires cache_text_embeddings: true')
+        if config.control_from_same_folder:
+            raise ValueError('Explicit guide roles require paired control folders, not random controls from the target folder')
+        roles = tuple(getattr(config, f'control_role_{i}', None) or
+                      ('guide' if i == image_guide_channel(self.model_config.model_kwargs) else 'reference')
+                      for i in (1, 2, 3))
+        if not hasattr(self, '_dataset_control_roles'):
+            self._dataset_control_roles = set()
+        self._dataset_control_roles.add(roles)
+
+    def sample_control_is_guide(self, gen_config, channel, path):
+        kw = self.model_config.model_kwargs
+        if kw.get("align_image_refs"):
+            role = getattr(gen_config, f'ctrl_role_{channel}', None)
+            if role not in (None, 'guide', 'reference'):
+                raise ValueError('Sample control roles must be guide or reference')
+            return role == 'guide' if role else channel == image_guide_channel(kw)
+        return bool(kw.get("align_video_refs") and os.path.splitext(str(path))[1].lower() in packing_video_exts)
+
+    def sample_text_control_skip_slots(self, gen_config):
+        if not self.guide_latent_only and not self.control_latent_only:
+            return set()
+        skip = set()
+        self._native_video_ref_paths = set()
+        for slot, channel in [('ctrl_img', 1), ('ctrl_img_1', 1), ('ctrl_img_2', 2), ('ctrl_img_3', 3)]:
+            path = getattr(gen_config, slot, None)
+            if path and self.sample_control_is_guide(gen_config, channel, path):
+                skip.add(slot)
+            elif path and os.path.splitext(str(path))[1].lower() in packing_video_exts:
+                self._native_video_ref_paths.add(str(path))
+        return skip
 
     def _present_image_control(self, image: Image.Image):
         n = self._image_ref_video_frames()
@@ -1242,6 +1295,12 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         self.guide_latent_only = bool(
             self.model_config.model_kwargs.get("guide_latent_only", False)
         )
+        if self.model_config.model_kwargs.get("align_image_refs"):
+            image_guide_channel(self.model_config.model_kwargs)
+            if self.dopsd or self.model_config.model_kwargs.get("image_refs_as_video"):
+                raise ValueError("Aligned image guides require D-OPSD off and Picture references")
+            if not self.guide_latent_only and not self.control_latent_only:
+                raise ValueError("Aligned image guides require latent-only guide conditioning")
         self._reference_downscale_factor()  # reject incompatible settings before loading weights
         self._reference_dropout_probabilities()
         kw = self.model_config.model_kwargs
@@ -1282,6 +1341,10 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         return {
             "reference_downscale_factor": self._reference_downscale_factor(),
             "align_video_refs": bool(self.model_config.model_kwargs.get("align_video_refs", False)),
+            "align_image_refs": bool(self.model_config.model_kwargs.get("align_image_refs", False)),
+            "image_guide_channel": self.model_config.model_kwargs.get("image_guide_channel", 1),
+            "minimax_h3_guide_spatial_version": "target_crop_v2",
+            "minimax_h3_dataset_control_roles": sorted(getattr(self, '_dataset_control_roles', set())),
             "control_latent_only": self.control_latent_only,
             "guide_latent_only": self.guide_latent_only,
             "minimax_h3_guide_position_version": "target_grid_stride_v1",
@@ -1350,7 +1413,18 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         if any(len(paths) != video_count for paths in video_paths):
             raise ValueError("Reference video counts must match across a batch; use batch_size 1 for variable counts")
         image_p, video_p = self._reference_dropout_probabilities()
-        image_keep, _ = reference_keep_masks(batch, ref_count, video_count, image_p, video_p)
+        image_flags = [getattr(item, "aligned_image_guide_flags", [False] * ref_count)
+                       for item in batch.file_items] if batch.file_items else [[False] * ref_count]
+        if any(flags != image_flags[0] for flags in image_flags):
+            raise ValueError("Image guide roles must match across a batch")
+        video_flags = [getattr(item, 'aligned_video_guide_flags',
+                       [bool(self.model_config.model_kwargs.get('align_video_refs'))] * video_count)
+                       for item in batch.file_items] if batch.file_items else [[]]
+        if any(flags != video_flags[0] for flags in video_flags):
+            raise ValueError('Video guide roles must match across a batch')
+        image_keep, _ = reference_keep_masks(batch, ref_count, video_count, image_p, video_p,
+                                             image_flags[0] if any(image_flags[0]) else (),
+                                             video_flags[0] if video_flags[0] else ())
 
         _, h_lat, w_lat = latent_shape
         target_h, target_w = h_lat * 16, w_lat * 16
@@ -1365,6 +1439,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         all_rows = []
         blocks = []
         for ref_idx in range(ref_count):
+            aligned_image = bool(image_flags[0][ref_idx])
             if not image_keep[ref_idx]:
                 continue
             resized = []
@@ -1372,7 +1447,8 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                 img = c[ref_idx]
                 if img.ndim == 4:
                     img = img[0]
-                ph, pw = size_fn(img.shape[2], img.shape[1], target_h, target_w)
+                ph, pw = (packing.aligned_reference_pixel_size(target_h, target_w, self._reference_downscale_factor())
+                          if aligned_image else size_fn(img.shape[2], img.shape[1], target_h, target_w))
                 # LANCZOS like ComfyUI / the sampling path
                 resized.append(
                     torch.nn.functional.interpolate(
@@ -1402,7 +1478,9 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                 + (1.0 - KEYFRAME_NOISE_AUG_T) * ref_noise
             )
             blocks.append(
-                (ref_latents.shape[2], ref_latents.shape[3], ref_latents.shape[4], 0)
+                (ref_latents.shape[2], ref_latents.shape[3], ref_latents.shape[4], 0, True)
+                if aligned_image else
+                (ref_latents.shape[2], ref_latents.shape[3], ref_latents.shape[4], 0, False)
             )
             all_rows.append(patchify_video_latents(ref_latents).to(dtype))
 
@@ -1464,7 +1542,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         return patchify_video_latents(ref_latents).to(dtype), audio_rows, (), blocks
 
     @torch.no_grad()
-    def _encode_ref_video_for_sampling(self, path: str, gen_config) -> torch.Tensor:
+    def _encode_ref_video_for_sampling(self, path: str, gen_config, align=None) -> torch.Tensor:
         """Decode a reference video with the SAME temporal treatment training
         uses (real-time pacing from frame 0 at 24 fps, tail trimmed, snapped
         down to 17n+5, capped at the sample's frame count), area-match it to
@@ -1473,6 +1551,8 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         import cv2
         import numpy as np
 
+        if align is None:
+            align = bool(self.model_config.model_kwargs.get("align_video_refs", False))
         cap = cv2.VideoCapture(path)
         if not cap.isOpened():
             raise ValueError(f"Could not open reference video {path}")
@@ -1488,7 +1568,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         ]
         cap.release()
         h0, w0 = frames[0].shape[:2]
-        if bool(self.model_config.model_kwargs.get("align_video_refs", False)):
+        if align:
             # Same target/factor canvas rule as training; keep the exact aspect
             # and an integer patch-grid ratio rather than matching only the area.
             ph, pw = packing.aligned_reference_pixel_size(
@@ -1500,6 +1580,10 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
             ph, pw = packing.reference_video_pixel_size(
                 w0, h0, gen_config.height, gen_config.width
             )
+        if align:
+            frames = [np.asarray(prepare_guide_image(Image.fromarray(f), gen_config.height,
+                       gen_config.width, self._reference_downscale_factor())) for f in frames]
+            h0, w0 = frames[0].shape[:2]
         pixels = torch.from_numpy(np.stack(frames)).float() / 255.0 * 2.0 - 1.0
         pixels = pixels.permute(3, 0, 1, 2)[None]  # (1, 3, T, H, W)
         pixels = (
@@ -1540,7 +1624,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
             audio_rows = self._fit_audio_rows(rows.float(), a_lat)
         except Exception:
             pass
-        return {"latent": latents[0].float(), "audio_rows": audio_rows}
+        return {"latent": latents[0].float(), "audio_rows": audio_rows, "aligned": align}
 
     @torch.no_grad()
     def _encode_static_image_ref_for_sampling(
@@ -1585,18 +1669,24 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         # Video guides use the target canvas divided by the factor; packing maps
         # their coarse patches onto the target grid. Identity images keep their
         # ordinary reference geometry.
-        align = bool(self.model_config.model_kwargs.get("align_video_refs", False))
+        flags_per_item = [getattr(item, 'aligned_video_guide_flags',
+                          [bool(self.model_config.model_kwargs.get("align_video_refs"))] * vid_count)
+                          for item in batch.file_items]
+        if any(flags != flags_per_item[0] for flags in flags_per_item):
+            raise ValueError('Video guide roles must match across a batch')
         for ref_idx in range(vid_count):
+            align = flags_per_item[0][ref_idx]
             selection = getattr(batch, "_h3_reference_keep", None)
             if selection is not None and not selection[2][ref_idx]:
                 continue
             lats = []
             auds = []
-            for per_item in paths_per_item:
+            for item_idx, per_item in enumerate(paths_per_item):
                 entry = load_ref_video_latent(
                     self, per_item[ref_idx], batch.dataset_config, target_h, target_w,
                     align=align,
-                    reference_downscale_factor=self._reference_downscale_factor(),
+                    reference_downscale_factor=self._reference_downscale_factor() if align else 1,
+                    file_item=batch.file_items[item_idx] if align else None,
                 )
                 lats.append(entry["latent"].to(device, torch.float32))
                 auds.append(entry.get("audio_rows"))
@@ -1630,6 +1720,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                     ref_latents.shape[3],
                     ref_latents.shape[4],
                     a_lat,
+                    align,
                 )
             )
             all_rows.append(patchify_video_latents(ref_latents).to(dtype))
@@ -1674,21 +1765,25 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         # resized to the target's pixel area with their own aspect kept;
         # videos are dataset-style encoded into multi-frame latent blocks
         ref_images = []
-        for path in (
-            gen_config.ctrl_img,
-            gen_config.ctrl_img_1,
-            gen_config.ctrl_img_2,
-            gen_config.ctrl_img_3,
-        ):
+        for slot, path in ((1, gen_config.ctrl_img), (1, gen_config.ctrl_img_1),
+                           (2, gen_config.ctrl_img_2), (3, gen_config.ctrl_img_3)):
             if path is None:
                 continue
             if os.path.splitext(str(path))[1].lower() in packing_video_exts:
                 ref_images.append(
-                    self._encode_ref_video_for_sampling(str(path), gen_config)
+                    self._encode_ref_video_for_sampling(str(path), gen_config,
+                                                        self.sample_control_is_guide(gen_config, slot, path))
                 )
             else:
                 img = Image.open(path).convert("RGB")
-                if self._image_ref_video_frames():
+                if self.sample_control_is_guide(gen_config, slot, path):
+                    img = prepare_guide_image(img, gen_config.height, gen_config.width,
+                                              self._reference_downscale_factor())
+                    import numpy as np
+                    pixels = torch.from_numpy(np.asarray(img).copy()).float().permute(2, 0, 1)
+                    latent = self.encode_keyframe_latents((pixels / 127.5 - 1)[None, :, None])[0]
+                    ref_images.append({"latent": latent.float(), "aligned": True})
+                elif self._image_ref_video_frames():
                     ref_images.append(
                         self._encode_static_image_ref_for_sampling(img, gen_config)
                     )

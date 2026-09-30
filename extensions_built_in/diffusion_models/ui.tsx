@@ -1150,6 +1150,8 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
     isVideoModel: true,
     defaults: {
       "config.process[0].model.model_kwargs.align_video_refs": [false, undefined],
+      "config.process[0].model.model_kwargs.align_image_refs": [false, undefined],
+      "config.process[0].model.model_kwargs.image_guide_channel": [1, undefined],
       "config.process[0].model.model_kwargs.control_latent_only": [false, undefined],
       "config.process[0].model.model_kwargs.guide_latent_only": [false, undefined],
       "config.process[0].model.model_kwargs.reference_downscale_factor": [1, undefined],
@@ -1217,11 +1219,13 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
         options: [
           { value: "reference", label: "Conventional references (default)" },
           { value: "guide", label: "Latent video guides + native image references" },
+          { value: "upscale", label: "Latent guides (images / videos) + native references" },
           { value: "all_latent", label: "All controls as latents (caption-only VLM)" },
           { value: "aligned_vlm", label: "Aligned video guides + VLM presentation" },
         ],
         getValue: (config: JobConfig) => {
           const kw = config.config.process[0].model.model_kwargs ?? {};
+          if (kw.align_image_refs) return "upscale";
           if (!kw.align_video_refs) return "reference";
           if (kw.control_latent_only) return "all_latent";
           return kw.guide_latent_only ? "guide" : "aligned_vlm";
@@ -1230,8 +1234,10 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
         onChange: (value, config, setJobConfig) => {
           const kwargs = { ...config.config.process[0].model.model_kwargs };
           kwargs.align_video_refs = value !== "reference";
+          kwargs.align_image_refs = value === "upscale";
+          kwargs.image_guide_channel = 1;
           kwargs.control_latent_only = value === "all_latent";
-          kwargs.guide_latent_only = value === "guide";
+          kwargs.guide_latent_only = value === "guide" || value === "upscale";
           if (value !== "all_latent") kwargs.reference_dropout = 0;
           if (value === "reference") kwargs.reference_downscale_factor = 1;
           if (value === "reference" || value === "aligned_vlm") {
@@ -1241,6 +1247,15 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
           if (value !== "reference") {
             delete kwargs.image_refs_as_video;
             delete kwargs.image_ref_video_frames;
+          }
+          if (value === "upscale") {
+            config.config.process[0].datasets.forEach((_, index) => {
+              setJobConfig(true, `config.process[0].datasets[${index}].cache_text_embeddings`);
+              setJobConfig(false, `config.process[0].datasets[${index}].random_crop`);
+              setJobConfig(false, `config.process[0].datasets[${index}].flip_x`);
+              setJobConfig(false, `config.process[0].datasets[${index}].flip_y`);
+              setJobConfig(true, `config.process[0].datasets[${index}].shrink_video_to_frames`);
+            });
           }
           setJobConfig(kwargs, "config.process[0].model.model_kwargs");
         },
@@ -1253,6 +1268,11 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
                 Videos bypass the VLM; image references keep native image conditioning.
                 All controls as latents also removes images from the VLM.
                 Aligned guides + VLM keeps both conditioning paths.</p>
+              <p>Choose Guide latent or Native reference beside each dataset control
+                channel and sample upload. Defaults: channel 1 is a guide;
+                channels 2 and 3 are native references. Any channel can be a guide.
+                Image guides bypass the VLM, and use cached text embeddings.
+                Guides reproduce the target crop and flips before downscaling.</p>
               <p>Use existing control channels for source videos, identity images,
                 and optional mask videos. Pair filenames with targets. Mask guides
                 need paired training examples and the same black/white convention
@@ -1285,7 +1305,7 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
             <div className="space-y-2">
               <p>Divide guide width and height by this factor. Target resolution and
                 frame timing stay unchanged. Factor 2 gives one quarter of guide
-                video tokens. The factor applies to every video guide, including masks.</p>
+                tokens. The factor applies to every aligned image/video guide, including masks.</p>
               <p>Training buckets and samples snap to multiples of 32 × factor.
                 Factor 1 retains finer mask detail.</p>
               <p>LoRA metadata saves the factor and conditioning mode. Inference
@@ -1338,6 +1358,7 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
           };
           if (value === "dopsd") {
             kwargs.align_video_refs = false;
+            kwargs.align_image_refs = false;
             kwargs.control_latent_only = false;
             kwargs.guide_latent_only = false;
             kwargs.reference_downscale_factor = 1;

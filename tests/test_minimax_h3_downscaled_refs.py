@@ -89,7 +89,9 @@ def clip(tmp_path):
 
 
 def cache_helpers():
-    ns = dict(torch=torch, cv2=cv2, np=np, os=os, json=json, base64=base64, hashlib=hashlib,
+    from minimax_h3_test_utils import prepare_guide_image, spatial_signature
+    from PIL import Image
+    ns = dict(prepare_guide_image=prepare_guide_image, spatial_signature=spatial_signature, Image=Image, torch=torch, cv2=cv2, np=np, os=os, json=json, base64=base64, hashlib=hashlib,
               load_file=load_file, save_file=save_file,
               get_quick_signature_string=lambda path: str(os.stat(path).st_size),
               reference_video_pixel_size=packing.reference_video_pixel_size,

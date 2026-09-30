@@ -22,10 +22,10 @@ export default function H3TrainingOptions({ jobConfig, setJobConfig }: Props) {
     <div className="space-y-4 pt-3">
       <FormGroup label="Reference & Guide Dropout">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <NumberInput label="Image Reference Dropout" min={0} max={1}
+          <NumberInput label="Native Reference Dropout" min={0} max={1}
             value={kwargs.reference_dropout ?? 0} disabled={!dropoutEnabled || !kwargs.control_latent_only}
             onChange={value => set('reference_dropout', value ?? 0)} />
-          <NumberInput label="Video Guide Dropout" min={0} max={1}
+          <NumberInput label="Image / Video Guide Dropout" min={0} max={1}
             value={kwargs.guide_dropout ?? 0} disabled={!dropoutEnabled}
             onChange={value => set('guide_dropout', value ?? 0)} />
         </div>
