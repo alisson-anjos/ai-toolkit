@@ -35,6 +35,7 @@ from toolkit.models.v2._mixin import OstrisModelMixin
 import torch
 import torch.nn.functional as F
 from torch import nn
+from toolkit.h3_reference_rope import add_source_phase
 from torch.utils.checkpoint import checkpoint
 
 MODALITY_NUM = 3  # 0 = video, 1 = text, 2 = audio; -1 marks padding rows
@@ -96,7 +97,7 @@ class MiniMaxH3Rope(nn.Module):
         # present in the checkpoint, so persistent
         self.register_buffer("inv_freq", inv_freq, persistent=True)
 
-    def forward(self, position_ids: torch.Tensor):
+    def forward(self, position_ids: torch.Tensor, source_phase_values=None):
         """position_ids (B, S, 3) -> cos, sin each (B, S, 96), float32."""
         # compute on the input's device: the frequency buffer may be left
         # CPU-resident by layer offloading / low_vram loads
@@ -106,6 +107,7 @@ class MiniMaxH3Rope(nn.Module):
         # (B, S, 3, 16) -> (B, S, 48) in (t, h, w) axis order -> duplicate to 96
         freqs = freqs.flatten(2, 3)
         freqs = torch.cat([freqs, freqs], dim=-1)
+        freqs = add_source_phase(freqs, source_phase_values)
         return freqs.cos(), freqs.sin()
 
 
@@ -504,6 +506,7 @@ class MiniMaxH3Transformer(nn.Module, OstrisModelMixin):
         vsa_video_grid: Optional[
             Tuple[int, int, int]
         ] = None,  # target-video token grid (t, h, w)
+        source_phase_values: Optional[torch.Tensor] = None,
     ):
         """Returns (video_out (B, Nv, 96), audio_out (B, Na, 32)) — the
         data-ward velocity ``clean - noise`` for every row, in input order.
@@ -511,7 +514,7 @@ class MiniMaxH3Transformer(nn.Module, OstrisModelMixin):
         job."""
         batch_size, seq_len = token_tags.shape
 
-        rotary_emb = self.rope(position_ids)
+        rotary_emb = self.rope(position_ids, source_phase_values)
 
         video_embeds = self.video_patch_proj(
             hidden_states.to(self.video_patch_proj.weight.dtype)

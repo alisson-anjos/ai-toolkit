@@ -1129,12 +1129,15 @@ class ControlFileItemDTOMixin:
             
             found_control_images = []
             found_control_videos = []
+            self.control_image_source_ids = []
+            self.control_video_source_ids = []
             allow_video_controls = sd is not None and getattr(
                 sd, 'supports_video_control_images', False)
-            for control_path in control_path_list:
+            for source_id, control_path in enumerate(control_path_list, 1):
                 for ext in img_ext_list:
                     if os.path.exists(os.path.join(control_path, file_name_no_ext + ext)):
                         found_control_images.append(os.path.join(control_path, file_name_no_ext + ext))
+                        self.control_image_source_ids.append(source_id)
                         self.has_control_image = True
                         break
                 else:
@@ -1142,6 +1145,7 @@ class ControlFileItemDTOMixin:
                         for ext in video_ext_list:
                             if os.path.exists(os.path.join(control_path, file_name_no_ext + ext)):
                                 found_control_videos.append(os.path.join(control_path, file_name_no_ext + ext))
+                                self.control_video_source_ids.append(source_id)
                                 self.has_control_image = True
                                 break
             # control VIDEO paths ride on the item; the model encodes and

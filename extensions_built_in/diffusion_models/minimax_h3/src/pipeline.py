@@ -25,6 +25,7 @@ import torch
 from PIL import Image
 from diffusers.utils.torch_utils import randn_tensor
 
+from toolkit.h3_reference_rope import options_from_kwargs
 from . import packing
 from .text_encoder import trim_caption_tokens
 from .packing import (
@@ -121,10 +122,10 @@ class MiniMaxH3Pipeline:
             if isinstance(r, dict):
                 lat = r["latent"]
                 a = r.get("audio_rows")
-                a_lat = int(a.shape[0]) // 2 if a is not None else 0
-                ref_blocks.append((lat.shape[1], lat.shape[2], lat.shape[3], a_lat, True)
-                                  if r.get("aligned") else (lat.shape[1], lat.shape[2], lat.shape[3], a_lat, False)
-                                  if "aligned" in r else (lat.shape[1], lat.shape[2], lat.shape[3], a_lat))
+                ref_a_lat = int(a.shape[0]) // 2 if a is not None else 0
+                ref_blocks.append((lat.shape[1], lat.shape[2], lat.shape[3], ref_a_lat, True)
+                                  if r.get("aligned") else (lat.shape[1], lat.shape[2], lat.shape[3], ref_a_lat, False)
+                                  if "aligned" in r else (lat.shape[1], lat.shape[2], lat.shape[3], ref_a_lat))
             elif isinstance(r, torch.Tensor):
                 ref_blocks.append((r.shape[1], r.shape[2], r.shape[3]))
             else:
@@ -142,6 +143,8 @@ class MiniMaxH3Pipeline:
             # two is silent — sampling just quietly stops matching what was trained
             aligned_refs=model._aligned_ref_flags(ref_blocks),
             reference_downscale_factor=model._reference_downscale_factor(),
+            ref_source_ids=tuple(kwargs.get('ref_source_ids', ())),
+            **options_from_kwargs(model.model_config.model_kwargs),
         )
         num_cond = layout.num_condition_video_rows
 
@@ -246,6 +249,7 @@ class MiniMaxH3Pipeline:
                 row_timesteps=row_t,
                 token_tags=tags,
                 position_ids=position_ids,
+                source_phase_values=layout.source_phase_values[None].to(device) if layout.source_phase_values is not None else None,
                 video_indices=video_indices,
                 audio_indices=audio_indices,
                 text_indices=text_indices,

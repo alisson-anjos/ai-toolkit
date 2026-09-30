@@ -45,6 +45,7 @@ import yaml
 from PIL import Image
 from safetensors.torch import load_file, save_file
 
+from toolkit.h3_reference_rope import options_from_kwargs, PHASE_VERSION
 from toolkit.accelerator import unwrap_model
 from toolkit.advanced_prompt_embeds import AdvancedPromptEmbeds
 from toolkit.basic import flush
@@ -215,6 +216,10 @@ class MinimaxH3Model(BaseModel):
         self._ref_video_dataset_config = None
         self._sample_ref_max_frames = None
         self.latent_space_version = "minimax_h3_v1"
+        rope_options = options_from_kwargs(self.model_config.model_kwargs)
+        experimental_rope = (rope_options['reference_source_phase'] or rope_options['guide_rope_layout'] != 'overlap' or rope_options['reference_rope_layout'] != 'native')
+        if experimental_rope and self.model_config.model_kwargs.get('dopsd', False):
+            raise ValueError('Experimental reference RoPE is not supported with D-OPSD teacher conditioning')
         # caption token cap (vision blocks are never truncated); the released
         # stack has no limit — set 0 to disable
         self.max_text_length = int(
@@ -966,6 +971,8 @@ class MinimaxH3Model(BaseModel):
                         ref_blocks=ref_blocks,
                         aligned_refs=aligned_refs,
                         reference_downscale_factor=self._reference_downscale_factor(),
+                        ref_source_ids=tuple(block[5] for block in ref_blocks) if self.model_config.model_kwargs.get('reference_source_phase', False) else (),
+                        **options_from_kwargs(self.model_config.model_kwargs),
                     )
                 )
             (
@@ -1017,6 +1024,7 @@ class MinimaxH3Model(BaseModel):
             row_timesteps=row_t.to(device),
             token_tags=token_tags.to(device),
             position_ids=position_ids.to(device),
+            source_phase_values=packing.pad_source_phases(layouts).to(device) if any(l.source_phase_values is not None for l in layouts) else None,
             video_indices=video_indices.to(device),
             audio_indices=audio_indices.to(device),
             text_indices=text_indices.to(device),
@@ -1348,6 +1356,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
             "control_latent_only": self.control_latent_only,
             "guide_latent_only": self.guide_latent_only,
             "minimax_h3_guide_position_version": "target_grid_stride_v1",
+            "minimax_h3_reference_rope": {**options_from_kwargs(self.model_config.model_kwargs), 'phase_version': PHASE_VERSION},
             "minimax_h3_reference_dropout": self.model_config.model_kwargs.get("reference_dropout", 0.0),
             "minimax_h3_guide_dropout": self.model_config.model_kwargs.get("guide_dropout", 0.0),
             "minimax_h3_auxiliary_losses": [
@@ -1482,6 +1491,11 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                 if aligned_image else
                 (ref_latents.shape[2], ref_latents.shape[3], ref_latents.shape[4], 0, False)
             )
+            if self.model_config.model_kwargs.get('reference_source_phase', False):
+                source_ids = batch.file_items[0].control_image_source_ids
+                if any(item.control_image_source_ids != source_ids for item in batch.file_items):
+                    raise ValueError('Control source channels must match across the batch')
+                blocks[-1] = (*blocks[-1], source_ids[ref_idx])
             all_rows.append(patchify_video_latents(ref_latents).to(dtype))
 
         audio_rows = []
@@ -1723,6 +1737,11 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                     align,
                 )
             )
+            if self.model_config.model_kwargs.get('reference_source_phase', False):
+                source_ids = batch.file_items[0].control_video_source_ids
+                if any(item.control_video_source_ids != source_ids for item in batch.file_items):
+                    raise ValueError('Control source channels must match across the batch')
+                blocks[-1] = (*blocks[-1], source_ids[ref_idx])
             all_rows.append(patchify_video_latents(ref_latents).to(dtype))
 
     @staticmethod
@@ -1765,10 +1784,12 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         # resized to the target's pixel area with their own aspect kept;
         # videos are dataset-style encoded into multi-frame latent blocks
         ref_images = []
+        ref_source_ids = []
         for slot, path in ((1, gen_config.ctrl_img), (1, gen_config.ctrl_img_1),
                            (2, gen_config.ctrl_img_2), (3, gen_config.ctrl_img_3)):
             if path is None:
                 continue
+            ref_source_ids.append(slot)
             if os.path.splitext(str(path))[1].lower() in packing_video_exts:
                 ref_images.append(
                     self._encode_ref_video_for_sampling(str(path), gen_config,
@@ -1807,6 +1828,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
             latents=gen_config.latents,
             generator=generator,
             ref_images=ref_images or None,
+            ref_source_ids=ref_source_ids,
             with_audio=with_audio and is_video,
         )
         if is_video:

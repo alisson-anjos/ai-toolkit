@@ -14,6 +14,7 @@ video and audio share one 40-units-per-second rotary clock (video advances
 that shared clock is the released checkpoint's audio/video alignment.
 """
 
+from toolkit.h3_reference_rope import validate_options, shift_reference
 import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -286,6 +287,7 @@ class PackedLayout:
     text_indices: torch.Tensor
     num_condition_video_rows: int
     num_condition_audio_rows: int = 0
+    source_phase_values: Optional[torch.Tensor] = None
 
 
 def validate_reference_downscale_factor(factor: int) -> int:
@@ -317,6 +319,12 @@ def build_packed_sequence(
     ref_blocks: Tuple[Tuple[int, int, int], ...] = (),
     aligned_refs: Tuple[bool, ...] = (),
     reference_downscale_factor: int = 1,
+    guide_rope_layout: str = 'overlap',
+    reference_rope_layout: str = 'native',
+    reference_source_phase: bool = False,
+    reference_phase_scale: float = 1.0,
+    reference_sidecar_margin: float = 0.0,
+    ref_source_ids: Tuple[int, ...] = (),
 ) -> PackedLayout:
     """Build the [text | conditions | target audio | target video] layout.
 
@@ -345,6 +353,12 @@ def build_packed_sequence(
     the target grid at that stride (H3 already normalizes spatial coordinates).
     Their frame count may be shorter, aligning from the target's first frame.
     """
+    validate_options(guide_rope_layout, reference_rope_layout, reference_source_phase,
+                     reference_phase_scale, reference_sidecar_margin)
+    if keyframe_anchors and (reference_source_phase or guide_rope_layout != 'overlap' or reference_rope_layout != 'native'):
+        raise ValueError('Experimental reference RoPE options require ref2va blocks')
+    if ref_source_ids and (len(ref_source_ids) != len(ref_blocks) or any(isinstance(x,bool) or not isinstance(x,int) or x<1 for x in ref_source_ids)):
+        raise ValueError('ref_source_ids must contain one positive integer per reference')
     if keyframe_anchors and ref_blocks:
         raise ValueError("keyframe_anchors and ref_blocks are mutually exclusive")
     _, ph, pw = patch_size
@@ -394,11 +408,12 @@ def build_packed_sequence(
     media_advance = sum(
         _block_advance(t, a)
         for (t, _, _, a), aligned in zip(ref_blocks, aligned_flags)
-        if not aligned
+        if not aligned and reference_rope_layout == "native"
     )
     media_origin = float(num_text) + media_advance
     position_ids = torch.zeros(seq_len, 3, dtype=torch.float64)
     position_ids[:num_text, 0] = torch.arange(num_text, dtype=torch.float64)
+    source_values = torch.zeros(seq_len, dtype=torch.float32) if reference_source_phase else None
 
     sqrt_area = math.sqrt(latent_height * latent_width)
     height_grid = _spatial_position_grid(latent_height, ph, sqrt_area)
@@ -436,6 +451,8 @@ def build_packed_sequence(
         ref_cursor = audio_start
     for i, (ref_t, ref_h, ref_w, ref_a) in enumerate(ref_blocks):
         aligned = aligned_flags[i]
+        rope_layout = guide_rope_layout if aligned else reference_rope_layout
+        block_start = ref_cursor
         if aligned:
             # Coarse tokens occupy every factor-th target patch origin. Do NOT
             # multiply H3's already area-normalized coordinates by the factor.
@@ -460,7 +477,7 @@ def build_packed_sequence(
                 ],
                 dim=-1,
             )
-            block_clock = ref_clock
+            block_clock = ref_clock if rope_layout == "native" else media_origin
         if ref_a:
             # soundtrack rows first: channel-major, shared 40/s clock from the
             # block origin, width pinned to the ref grid's extremes
@@ -483,7 +500,9 @@ def build_packed_sequence(
         position_ids[ref_cursor : ref_cursor + ref_vid_rows[i]] = block.reshape(-1, 3)
         cond_video_idx.append(torch.arange(ref_cursor, ref_cursor + ref_vid_rows[i]))
         ref_cursor += ref_vid_rows[i]
-        if not aligned:
+        if source_values is not None:
+            source_values[block_start:ref_cursor] = (ref_source_ids[i] if ref_source_ids else i + 1) * reference_phase_scale
+        if not aligned and rope_layout == 'native':
             ref_clock += _block_advance(ref_t, ref_a)
 
     # audio rows: channel-major, one rotary unit per latent (40/s = 24fps*5/3),
@@ -506,6 +525,14 @@ def build_packed_sequence(
     video_pos[:, :, 1:] = frame_grid[None]
     position_ids[video_start:] = video_pos.reshape(-1, 3)
 
+    cursor = cond_start
+    for i, aligned in enumerate(aligned_flags):
+        stop = cursor + ref_aud_rows[i] + ref_vid_rows[i]
+        layout_name = guide_rope_layout if aligned else reference_rope_layout
+        if layout_name == 'sidecar':
+            position_ids[cursor:stop] = shift_reference(position_ids[cursor:stop], position_ids[video_start:], layout_name, reference_sidecar_margin)
+        cursor = stop
+
     num_cond_video = sum(int(x.shape[0]) for x in cond_video_idx)
     num_cond_audio = sum(int(x.shape[0]) for x in cond_audio_idx)
     video_indices = torch.cat(cond_video_idx + [torch.arange(video_start, seq_len)])
@@ -526,6 +553,7 @@ def build_packed_sequence(
         text_indices=text_indices,
         num_condition_video_rows=num_cond_video,
         num_condition_audio_rows=num_cond_audio,
+        source_phase_values=source_values,
     )
 
 
@@ -640,3 +668,17 @@ def build_sigma_schedule(
         base = torch.linspace(1.0, 0.0, num_inference_steps + 1, dtype=torch.float32)
     sigmas = shift_sigma(base, shift)
     return torch.unique_consecutive(sigmas)
+
+
+def pad_source_phases(layouts):
+    if all(layout.source_phase_values is None for layout in layouts):
+        return None
+    max_text=max(len(layout.text_indices) for layout in layouts)
+    size=max_text+layouts[0].sequence_length-len(layouts[0].text_indices)
+    result=torch.zeros(len(layouts),size,dtype=torch.float32)
+    for i,layout in enumerate(layouts):
+        if layout.source_phase_values is not None:
+            text=len(layout.text_indices)
+            result[i,:text]=layout.source_phase_values[:text]
+            result[i,max_text:]=layout.source_phase_values[text:]
+    return result

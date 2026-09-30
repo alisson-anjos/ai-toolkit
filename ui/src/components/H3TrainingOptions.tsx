@@ -1,6 +1,6 @@
 'use client';
 import type { JobConfig } from '@/types';
-import { FormGroup, NumberInput, SelectInput, TextInput } from '@/components/formInputs';
+import { FormGroup, NumberInput, SelectInput, TextInput, Checkbox } from '@/components/formInputs';
 
 type Props = { jobConfig: JobConfig; setJobConfig: (value: any, key: string) => void };
 type AuxiliaryLoss = { type: string; weight: number; model_path?: string; crop?: number[] };
@@ -20,6 +20,25 @@ export default function H3TrainingOptions({ jobConfig, setJobConfig }: Props) {
   };
   return (
     <div className="space-y-4 pt-3">
+      <FormGroup label="Experimental Reference RoPE">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <SelectInput label="Guide Layout" value={kwargs.guide_rope_layout ?? 'overlap'}
+            options={[{value:'overlap',label:'Overlap — aligned target grid (default)'},{value:'sidecar',label:'Sidecar — beside target'}]}
+            onChange={value => set('guide_rope_layout', value)} />
+          <SelectInput label="Identity Reference Layout" value={kwargs.reference_rope_layout ?? 'native'}
+            options={[{value:'native',label:'Native H3 clock (default)'},{value:'overlap',label:'Overlap — target clock'},{value:'sidecar',label:'Sidecar — beside target'}]}
+            onChange={value => set('reference_rope_layout', value)} />
+          <Checkbox label="Source Phase (experimental)" checked={kwargs.reference_source_phase ?? false}
+            onChange={value => set('reference_source_phase', value)} />
+          <NumberInput label="Source Phase Scale" min={0} value={kwargs.reference_phase_scale ?? 1}
+            onChange={value => set('reference_phase_scale', value ?? 1)} />
+          <NumberInput label="Sidecar Margin (H3 RoPE units)" min={0} value={kwargs.reference_sidecar_margin ?? 0}
+            onChange={value => set('reference_sidecar_margin', value ?? 0)} />
+        </div>
+        <p className="text-sm text-gray-400 mt-2">Ref2VA only. Source IDs follow control channels (1–3), with target and text at 0.
+          Defaults preserve current geometry. Experimental checkpoints require matching settings during inference.
+          These options distinguish sources; they do not guarantee face identity. Additional identity images use a reference control channel.</p>
+      </FormGroup>
       <FormGroup label="Reference & Guide Dropout">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <NumberInput label="Native Reference Dropout" min={0} max={1}

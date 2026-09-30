@@ -189,3 +189,6 @@ python -c "import torch; print(torch.cuda.is_available())"
 ```
 
 CPU tests cover geometry, condition building, caches, isolated sampling, and UI controls. They do not replace a full training run with pretrained H3 weights and a working GPU.
+
+Experimental overlap/sidecar layouts and source-phase tagging are documented in
+[H3_REFERENCE_ROPE.md](H3_REFERENCE_ROPE.md). Defaults preserve the existing guide recipe.
