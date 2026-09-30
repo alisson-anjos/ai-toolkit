@@ -115,6 +115,12 @@ must be cached on each dataset in latent-guide mode. Control video latents have
 their own lazy disk cache; the presence of a target cache alone does not prove
 all guide preprocessing has completed.
 
+H3 target video caches store the selected source frame indices and source FPS.
+Aligned guides restore this selection, including when workers reload a target
+latent from disk. Older caches without this temporal information are regenerated:
+their random window cannot be recovered safely. Changing `shrink_video_to_frames`
+also selects a different target cache, so guide and target keep the same clock.
+
 OOM reports include each batch file, target canvas, and frame count. Automagic
 v3 with `fused: true` updates parameters during backward. An OOM can therefore
 leave partial parameter updates; clearing gradients cannot roll them back.

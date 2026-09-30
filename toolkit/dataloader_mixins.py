@@ -1881,6 +1881,11 @@ class LatentCachingFileItemDTOMixin:
         if is_video and self.dataset_config.fps != 24:
             # only add fps if it deviates from the default
             item["fps"] = self.dataset_config.fps
+        if is_video and self.latent_space_version.startswith("minimax_h3"):
+            # Older H3 caches lost the random target window. They cannot safely
+            # condition an aligned guide; encode again and persist the selection.
+            item["video_temporal_cache_version"] = 2
+            item["shrink_video_to_frames"] = self.dataset_config.shrink_video_to_frames
         if is_video and self.dataset_config.do_i2v:
                 item["do_i2v"] = True
         if is_video and self.dataset_config.do_audio:
@@ -1956,6 +1961,9 @@ class LatentCachingFileItemDTOMixin:
                 self._encoded_latent = DTO(self._encoded_latent, **extras)
             if 'num_frames' in state_dict:
                 self.num_frames = int(state_dict['num_frames'].item())
+            if 'video_frame_indices' in state_dict:
+                self.video_frame_indices = tuple(state_dict['video_frame_indices'].tolist())
+                self.video_source_fps = float(state_dict['video_source_fps'].item())
             if 'tensor' in state_dict:
                 self._cached_tensor_uint8 = state_dict['tensor']
             if 'waveform' in state_dict:
@@ -2100,6 +2108,10 @@ class LatentCachingMixin:
     ):
         # check if it is saved to disk already
         if not needs_encode:
+            if file_item.is_video and file_item.latent_space_version.startswith("minimax_h3"):
+                temporal_state = cached_state_dict if cached_state_dict is not None else load_file(latent_path, device='cpu')
+                file_item.video_frame_indices = tuple(temporal_state['video_frame_indices'].tolist())
+                file_item.video_source_fps = float(temporal_state['video_source_fps'].item())
             if to_memory:
                 # load it into memory
                 state_dict = cached_state_dict
@@ -2196,6 +2208,9 @@ class LatentCachingMixin:
 
             if is_video:
                 state_dict['num_frames'] = torch.tensor(file_item.num_frames, dtype=torch.int32)
+                if getattr(file_item, 'video_frame_indices', None) is not None:
+                    state_dict['video_frame_indices'] = torch.tensor(file_item.video_frame_indices, dtype=torch.int64)
+                    state_dict['video_source_fps'] = torch.tensor(file_item.video_source_fps, dtype=torch.float64)
 
             # save_latent
             if to_disk:
