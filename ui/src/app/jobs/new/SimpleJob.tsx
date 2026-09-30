@@ -1713,9 +1713,9 @@ export default function SimpleJob({
             {jobConfig.config.process[0].sample.samples.map((sample, i) => (
               <div key={i} className="rounded-lg pl-4 pr-1 mb-4 bg-gray-950">
                 <div className="flex items-center space-x-2">
-                  <div className="flex-1">
-                    <div className="flex">
-                      <div className="flex-1">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-col gap-4">
+                      <div className="w-full min-w-0">
                         {modelArch?.sampleTags && taggedSampleArr && modelArchTagSections ? (
                           <>
                             {modelArchTagSections.map((sampleTagSection, sti) => (
@@ -1934,10 +1934,10 @@ export default function SimpleJob({
                         </div>
                       </div>
                       {modelArch?.additionalSections?.includes('datasets.multi_control_paths') && (
-                        <FormGroup label={usesLatentGuides ? 'Guide Images / Videos, References & Masks' : 'Control Images'} className="pt-2 ml-4">
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-2 mt-2">
+                        <FormGroup label={usesLatentGuides ? 'Guide Images / Videos, References & Masks' : 'Control Images'} className="pt-2 w-full min-w-0">
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-2">
                             {['ctrl_img_1', 'ctrl_img_2', 'ctrl_img_3'].map((ctrlKey, ctrl_idx) => (
-                              <div key={ctrlKey}>
+                              <div key={ctrlKey} className="min-w-0">
                               <SampleControlImage
                                 instruction={usesLatentGuides ? `Add Control ${ctrl_idx + 1}` : `Add Control Image ${ctrl_idx + 1}`}
                                 className=""

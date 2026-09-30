@@ -4,6 +4,13 @@ AI Toolkit is an easy to use all in one training suite for diffusion models. I t
 
 
 
+## MiniMax H3 latent guides in this fork
+
+This fork adds aligned image/video latent guides, a guide downscale factor, explicit guide/native-reference roles per dataset and sample channel, and optional training controls.
+
+- [Training guide: configure latent guides in the UI](H3_LATENT_GUIDES.md)
+- [Technical details, configuration and validation](LATENT_GUIDES.md)
+
 ## Supported Models
 
 ### Image

@@ -169,8 +169,6 @@ These are fragments, not complete jobs. Dataset media stays at its source resolu
 
 LoRA metadata additionally records `align_image_refs`, the fallback `image_guide_channel`, `minimax_h3_dataset_control_roles` (channel-role triples), and `minimax_h3_guide_spatial_version=target_crop_v2`. These describe conditioning; external inference integrations still need to implement the equivalent roles, factor, crop, and packed layout.
 
-## Motion-transfer dataset awaiting inspection
+## Audio conditioning
 
-The proposed `animate_small.zip` Google Drive file is public but currently returns a download-quota error. Its JSON and media have not been inspected. A provisional direction is GT as motion guide and synthetic as target, with a synthetic appearance/first-frame image as a separate reference or aligned first-frame guide, conditional on actual frame correspondence. Do not invert the pair or interpret JSON reference indices as temporal alignment without checking examples.
-
-Embedded guide-video soundtracks already enter the audio VAE as clean conditioning rows; when the video block is aligned, its audio is on the target clock. This is not yet an independent UI selector for audio-guide versus native standalone audio reference. Separate audio roles/inputs and synthetic-target audio handling remain future work, informed by the paired dataset. A synthetic target without audio must not accidentally train a speech-generation objective against silence.
+Embedded guide-video soundtracks enter the audio VAE as clean conditioning rows. Aligned video blocks place their audio on the target clock. There is no independent audio-guide versus native standalone audio-reference selector in this patch. Target audio supervision requires valid target audio and synchronized timing; silent targets must not accidentally supervise speech against silence.
