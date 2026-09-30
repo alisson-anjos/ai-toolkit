@@ -2470,7 +2470,8 @@ class TextEmbeddingCachingMixin:
                         did_move = True
 
                     control_video_paths = getattr(file_item, 'control_video_paths', None) or []
-                    if file_item.encode_control_in_text_embeddings and (
+                    if (file_item.encode_control_in_text_embeddings
+                        and not getattr(file_item, 'control_latent_only', False)) and (
                         file_item.control_path is not None or len(control_video_paths) > 0
                     ):
                         ctrl_img_list = []
@@ -2498,7 +2499,8 @@ class TextEmbeddingCachingMixin:
                         # timestamped vision blocks); images first, then videos.
                         # The model needs the dataset config to treat the clip
                         # exactly like its latent rows (frame count / trim)
-                        ctrl_img_list.extend(control_video_paths)
+                        if not getattr(file_item, 'guide_latent_only', False):
+                            ctrl_img_list.extend(control_video_paths)
                         if len(control_video_paths) > 0:
                             self.sd._ref_video_dataset_config = self.dataset_config
                         

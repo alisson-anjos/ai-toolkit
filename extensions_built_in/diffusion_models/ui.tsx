@@ -1149,6 +1149,16 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
     group: "video",
     isVideoModel: true,
     defaults: {
+      "config.process[0].model.model_kwargs.align_video_refs": [false, undefined],
+      "config.process[0].model.model_kwargs.control_latent_only": [false, undefined],
+      "config.process[0].model.model_kwargs.guide_latent_only": [false, undefined],
+      "config.process[0].model.model_kwargs.reference_downscale_factor": [1, undefined],
+      "config.process[0].model.model_kwargs.reference_dropout": [0, undefined],
+      "config.process[0].model.model_kwargs.guide_dropout": [0, undefined],
+      "config.process[0].model.model_kwargs.auxiliary_losses": [[], undefined],
+      "config.process[0].model.model_kwargs.auxiliary_loss_max_sigma": [0.5, undefined],
+      "config.process[0].model.model_kwargs.auxiliary_loss_latent_frames": [2, undefined],
+      "config.process[0].model.model_kwargs.auxiliary_loss_sample_frames": [1, undefined],
       // default updates when [selected, unselected] in the UI
       "config.process[0].model.name_or_path": [
         "Comfy-Org/MiniMax-H3",
@@ -1203,6 +1213,89 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
     ],
     customModelSelectOptions: [
       {
+        label: "Control Conditioning",
+        options: [
+          { value: "reference", label: "Conventional references (default)" },
+          { value: "guide", label: "Latent video guides + native image references" },
+          { value: "all_latent", label: "All controls as latents (caption-only VLM)" },
+          { value: "aligned_vlm", label: "Aligned video guides + VLM presentation" },
+        ],
+        getValue: (config: JobConfig) => {
+          const kw = config.config.process[0].model.model_kwargs ?? {};
+          if (!kw.align_video_refs) return "reference";
+          if (kw.control_latent_only) return "all_latent";
+          return kw.guide_latent_only ? "guide" : "aligned_vlm";
+        },
+        disabled: (config: JobConfig) => !!config.config.process[0].model.model_kwargs?.dopsd,
+        onChange: (value, config, setJobConfig) => {
+          const kwargs = { ...config.config.process[0].model.model_kwargs };
+          kwargs.align_video_refs = value !== "reference";
+          kwargs.control_latent_only = value === "all_latent";
+          kwargs.guide_latent_only = value === "guide";
+          if (value !== "all_latent") kwargs.reference_dropout = 0;
+          if (value === "reference") kwargs.reference_downscale_factor = 1;
+          if (value === "reference" || value === "aligned_vlm") {
+            kwargs.reference_dropout = 0;
+            kwargs.guide_dropout = 0;
+          }
+          if (value !== "reference") {
+            delete kwargs.image_refs_as_video;
+            delete kwargs.image_ref_video_frames;
+          }
+          setJobConfig(kwargs, "config.process[0].model.model_kwargs");
+        },
+        doc: {
+          title: "MiniMax-H3 Control Conditioning",
+          description: (
+            <div className="space-y-2">
+              <p>Conventional references use the native reference layout.</p>
+              <p>Latent video guides share target time and spatial coordinates.
+                Videos bypass the VLM; image references keep native image conditioning.
+                All controls as latents also removes images from the VLM.
+                Aligned guides + VLM keeps both conditioning paths.</p>
+              <p>Use existing control channels for source videos, identity images,
+                and optional mask videos. Pair filenames with targets. Mask guides
+                need paired training examples and the same black/white convention
+                at inference; they condition editing rather than mask the loss.</p>
+              <p>Guide training requires D-OPSD to be off. Use Picture presentation
+                for images when combining them with downscaled guides.</p>
+            </div>
+          ),
+        },
+      },
+      {
+        label: "Guide Downscale Factor",
+        options: [
+          { value: "1", label: "1 — full resolution" },
+          { value: "2", label: "2 — half width / height" },
+          { value: "4", label: "4 — quarter width / height" },
+          { value: "8", label: "8 — one eighth width / height" },
+        ],
+        getValue: (config: JobConfig) => String(config.config.process[0].model.model_kwargs?.reference_downscale_factor ?? 1),
+        disabled: (config: JobConfig) => {
+          const kw = config.config.process[0].model.model_kwargs ?? {};
+          return !kw.align_video_refs || !!kw.dopsd || !!kw.image_refs_as_video;
+        },
+        onChange: (value, config, setJobConfig) => {
+          setJobConfig(Number(value), "config.process[0].model.model_kwargs.reference_downscale_factor");
+        },
+        doc: {
+          title: "MiniMax-H3 Guide Downscale Factor",
+          description: (
+            <div className="space-y-2">
+              <p>Divide guide width and height by this factor. Target resolution and
+                frame timing stay unchanged. Factor 2 gives one quarter of guide
+                video tokens. The factor applies to every video guide, including masks.</p>
+              <p>Training buckets and samples snap to multiples of 32 × factor.
+                Factor 1 retains finer mask detail.</p>
+              <p>LoRA metadata saves the factor and conditioning mode. Inference
+                must reproduce them; external loaders need support for these fields
+                and the guide coordinate layout.</p>
+            </div>
+          ),
+        },
+      },
+      {
         label: "Distillation Handling Method",
         options: [
           { value: "cg", label: "Contrastive Guidance" },
@@ -1244,6 +1337,12 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
             ...(config?.config?.process?.[0]?.model?.model_kwargs ?? {}),
           };
           if (value === "dopsd") {
+            kwargs.align_video_refs = false;
+            kwargs.control_latent_only = false;
+            kwargs.guide_latent_only = false;
+            kwargs.reference_downscale_factor = 1;
+            kwargs.reference_dropout = 0;
+            kwargs.guide_dropout = 0;
             kwargs.dopsd = true;
             kwargs.dopsd_bleed_strength = 1.0;
           } else {
@@ -1313,6 +1412,7 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
       },
       {
         label: "Image Reference Presentation",
+        disabled: (config: JobConfig) => !!config.config.process[0].model.model_kwargs?.align_video_refs,
         options: [
           { value: "picture", label: "Picture (default)" },
           { value: "video", label: "Static video clip" },
@@ -1332,6 +1432,9 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
             ...(config?.config?.process?.[0]?.model?.model_kwargs ?? {}),
           };
           if (value === "video") {
+            kwargs.reference_downscale_factor = 1;
+            kwargs.reference_dropout = 0;
+            kwargs.guide_dropout = 0;
             kwargs.image_refs_as_video = true;
           } else {
             delete kwargs.image_refs_as_video;

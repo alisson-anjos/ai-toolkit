@@ -87,6 +87,10 @@ from .src.ref_video_cache import (
     ref_frame_indices,
     static_image_video_ref,
 )
+from .src.training_controls import (
+    dropout_probability, reference_keep_masks,
+)
+from .src.auxiliary_losses import VideoAuxiliaryLosses
 from .src.text_encoder import (
     TEXT_ENCODER_LAYER,
     VideoRef,
@@ -536,6 +540,7 @@ class MinimaxH3Model(BaseModel):
         return image
 
     def get_prompt_embeds(self, prompt, control_images=None) -> AdvancedPromptEmbeds:
+        control_images = self._text_control_images(control_images)
         if isinstance(prompt, str):
             prompt = [prompt]
         if self.text_encoder.device == torch.device("cpu"):
@@ -544,44 +549,56 @@ class MinimaxH3Model(BaseModel):
         # control tensors arrive in [0, 1]; the Qwen3-VL processor wants PIL
         keyframes_per_prompt = [None] * len(prompt)
         if control_images is not None:
-            if isinstance(control_images, torch.Tensor):
-                images = [control_images[i] for i in range(control_images.shape[0])]
-            elif isinstance(control_images, list):
-                images = [
-                    c[0] if isinstance(c, torch.Tensor) and c.ndim == 4 else c
-                    for c in control_images
-                ]
-            else:
-                images = [control_images]
-            pil_images = []
-            for img in images:
+
+            def _to_keyframe(img):
                 if isinstance(img, torch.Tensor):
                     if img.ndim == 4:
                         img = img[0]
                     arr = (img.float().clamp(0, 1) * 255).round().to(torch.uint8)
-                    pil_images.append(
-                        self._present_image_control(
-                            Image.fromarray(arr.permute(1, 2, 0).cpu().numpy())
-                        )
+                    return self._present_image_control(
+                        Image.fromarray(arr.permute(1, 2, 0).cpu().numpy())
                     )
-                elif isinstance(img, str):
+                if isinstance(img, str):
                     # a control VIDEO path: 2 fps timestamped presentation over
                     # the SAME frames the latent rows use (dataset treatment
                     # when caching training embeds, sample-length at sampling)
                     ds_cfg = getattr(self, "_ref_video_dataset_config", None)
-                    pil_images.append(
-                        load_video_ref_for_te(
-                            self, img, ds_cfg, max_frames=self._sample_ref_max_frames
-                        )
+                    return load_video_ref_for_te(
+                        self, img, ds_cfg, max_frames=self._sample_ref_max_frames
                     )
-                else:
-                    pil_images.append(img)
-            if len(pil_images) == 1:
-                keyframes_per_prompt = [pil_images] * len(prompt)
-            elif len(pil_images) == len(prompt):
-                keyframes_per_prompt = [[img] for img in pil_images]
+                return img
+
+            # batch.control_tensor_list is [item][ref]: several references per
+            # batch item. It must stay nested per item -- collapsing it emits a
+            # single <Picture> block while the image processor flattens the
+            # inner list into N images ("image features and image tokens do not
+            # match", tokens counted from image_grid_thw[0] only).
+            if (
+                isinstance(control_images, list)
+                and len(control_images) > 0
+                and all(isinstance(c, (list, tuple)) for c in control_images)
+            ):
+                per_item = [[_to_keyframe(r) for r in refs] for refs in control_images]
+                if len(per_item) == 1 and len(prompt) > 1:
+                    per_item = per_item * len(prompt)
+                keyframes_per_prompt = per_item
             else:
-                keyframes_per_prompt = [pil_images] * len(prompt)
+                if isinstance(control_images, torch.Tensor):
+                    images = [control_images[i] for i in range(control_images.shape[0])]
+                elif isinstance(control_images, list):
+                    images = [
+                        c[0] if isinstance(c, torch.Tensor) and c.ndim == 4 else c
+                        for c in control_images
+                    ]
+                else:
+                    images = [control_images]
+                pil_images = [_to_keyframe(img) for img in images]
+                if len(pil_images) == 1:
+                    keyframes_per_prompt = [pil_images] * len(prompt)
+                elif len(pil_images) == len(prompt):
+                    keyframes_per_prompt = [[img] for img in pil_images]
+                else:
+                    keyframes_per_prompt = [pil_images] * len(prompt)
 
         embeds_list, tags_list = [], []
         for p, keyframes in zip(prompt, keyframes_per_prompt):
@@ -728,6 +745,50 @@ class MinimaxH3Model(BaseModel):
     # ------------------------------------------------------------------
     # Training forward
     # ------------------------------------------------------------------
+    def _text_control_images(self, controls):
+        """Keep native image references while optionally removing video guides from the VLM."""
+        if getattr(self, "control_latent_only", False):
+            return None
+        if not getattr(self, "guide_latent_only", False) or controls is None:
+            return controls
+        if isinstance(controls, str):
+            return None if os.path.splitext(controls)[1].lower() in packing_video_exts else controls
+        if isinstance(controls, (list, tuple)):
+            filtered = [self._text_control_images(control) for control in controls]
+            return [control for control in filtered if control is not None]
+        return controls
+
+    def _reference_downscale_factor(self):
+        kw = self.model_config.model_kwargs
+        factor = packing.validate_reference_downscale_factor(
+            kw.get("reference_downscale_factor", 1)
+        )
+        if factor > 1 and not kw.get("align_video_refs", False):
+            raise ValueError("reference_downscale_factor > 1 requires align_video_refs: true")
+        if factor > 1 and (kw.get("dopsd", False) or kw.get("image_refs_as_video", False)):
+            raise ValueError(
+                "reference_downscale_factor > 1 cannot be combined with "
+                "dopsd or image_refs_as_video; use ordinary identity image references"
+            )
+        return factor
+
+    def _aligned_ref_flags(self, ref_blocks):
+        """Which reference blocks share the target's coordinates.
+
+        With ``align_video_refs`` a *video* reference stops being a loose reference and
+        becomes a v2v guide: same rotary clock, same spatial grid as the target, so guide
+        frame ``i`` drives output frame ``i`` without the model having to search for the
+        correspondence. Image references are never aligned — an identity photo has no
+        spatial correspondence with the output and should not claim one.
+
+        A head-swap pack is exactly this pair: aligned driving video, unaligned identity.
+        """
+        if not ref_blocks or not self.model_config.model_kwargs.get(
+            "align_video_refs", False
+        ):
+            return ()
+        return tuple(block[0] > 1 for block in ref_blocks)
+
     def _build_condition(
         self, batch: "DataLoaderBatchDTO", latent_shape, device, dtype
     ):
@@ -888,6 +949,7 @@ class MinimaxH3Model(BaseModel):
             text_tag_list = [t for _, t in trimmed]
 
             # --- packed layout (per item: text lengths differ) --------------
+            aligned_refs = self._aligned_ref_flags(ref_blocks)
             layouts = []
             for i in range(batch_size):
                 layouts.append(
@@ -899,6 +961,8 @@ class MinimaxH3Model(BaseModel):
                         num_audio_latents=a_lat,
                         keyframe_anchors=keyframe_anchors,
                         ref_blocks=ref_blocks,
+                        aligned_refs=aligned_refs,
+                        reference_downscale_factor=self._reference_downscale_factor(),
                     )
                 )
             (
@@ -1133,9 +1197,13 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
     def text_embedding_space_version(self):
         # the presentation of image references changes the embeds -> new cache key
         n = self._image_ref_video_frames()
-        if n:
-            return f"{self.arch}:img_as_vid{n}"
-        return self.arch
+        base = f"{self.arch}:img_as_vid{n}" if n else self.arch
+        if getattr(self, "control_latent_only", False):
+            # embeds drop the control media entirely -> different space
+            return f"{base}:ctrl_latent_only"
+        if getattr(self, "guide_latent_only", False):
+            return f"{base}:guide_latent_only"
+        return base
 
     def _present_image_control(self, image: Image.Image):
         n = self._image_ref_video_frames()
@@ -1155,6 +1223,35 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         # D-OPSD: a no-grad teacher pass with the target as its own reference
         # becomes the training target for the reference-free student pass
         self.dopsd = bool(self.model_config.model_kwargs.get("dopsd", False))
+        # VLM-gap variant of D-OPSD: teacher and student share the SAME condition
+        # (the aligned guide); the information gap is the VLM's reading of that
+        # guide, which only the teacher's text embeds carry. The student's
+        # sequence loses the vision tokens -- here ~8.2k of ~14.6k -- so it is
+        # cheaper to train and to sample, and it matches ComfyUI's AddGuide path,
+        # where the guide reaches the DiT as latents but never reaches the VLM.
+        # Control media reaches the DiT as latents only -- it is never presented
+        # to the VLM. For a v2v guide that is usually what you want: the guide
+        # already lands on the target's rotary grid via align_video_refs, the
+        # vision tokens are pure cost (~8.2k of a ~14.6k sequence on a 73-frame
+        # 512x288 clip), and inference paths that inject the guide as a keyframe
+        # (ComfyUI's Add Guide) never show it to the VLM either -- so training
+        # with the presentation creates a train/inference gap.
+        self.control_latent_only = bool(
+            self.model_config.model_kwargs.get("control_latent_only", False)
+        )
+        self.guide_latent_only = bool(
+            self.model_config.model_kwargs.get("guide_latent_only", False)
+        )
+        self._reference_downscale_factor()  # reject incompatible settings before loading weights
+        self._reference_dropout_probabilities()
+        kw = self.model_config.model_kwargs
+        self._video_auxiliary_losses = VideoAuxiliaryLosses(
+            kw.get("auxiliary_losses"),
+            max_sigma=kw.get("auxiliary_loss_max_sigma", 0.5),
+            latent_frames=kw.get("auxiliary_loss_latent_frames", 2),
+            sample_frames=kw.get("auxiliary_loss_sample_frames", 1),
+        )
+        self.additional_loss_logs = {}
         if self.dopsd:
             self.dopsd_self_ref = True
             self.require_pixel_tensor_cache = True
@@ -1175,6 +1272,48 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
 
     def get_base_model_version(self):
         return "minimax_h3_ref2va"
+
+    def get_bucket_divisibility(self):
+        # Both the target and its downscaled guide must have a complete VAE/DiT grid.
+        return packing.CANVAS_MULTIPLE * self._reference_downscale_factor()
+
+    def get_additional_save_metadata(self):
+        """LoRA consumers must reproduce the guide geometry used in training."""
+        return {
+            "reference_downscale_factor": self._reference_downscale_factor(),
+            "align_video_refs": bool(self.model_config.model_kwargs.get("align_video_refs", False)),
+            "control_latent_only": self.control_latent_only,
+            "guide_latent_only": self.guide_latent_only,
+            "minimax_h3_guide_position_version": "target_grid_stride_v1",
+            "minimax_h3_reference_dropout": self.model_config.model_kwargs.get("reference_dropout", 0.0),
+            "minimax_h3_guide_dropout": self.model_config.model_kwargs.get("guide_dropout", 0.0),
+            "minimax_h3_auxiliary_losses": [
+                {key: spec[key] for key in ("type", "weight", "crop") if key in spec}
+                for spec in self.model_config.model_kwargs.get("auxiliary_losses", [])
+            ],
+        }
+
+    def _reference_dropout_probabilities(self):
+        kw = self.model_config.model_kwargs
+        image_p = dropout_probability(kw.get("reference_dropout", 0.0), "reference_dropout")
+        video_p = dropout_probability(kw.get("guide_dropout", 0.0), "guide_dropout")
+        if image_p and not kw.get("control_latent_only"):
+            raise ValueError("Image reference dropout requires control_latent_only: true; cached Qwen caption embeddings otherwise retain image information")
+        if image_p or video_p:
+            if kw.get("dopsd") or kw.get("image_refs_as_video"):
+                raise ValueError("Reference dropout requires D-OPSD off and Picture image references")
+            if not (kw.get("guide_latent_only") or kw.get("control_latent_only")):
+                raise ValueError("Reference dropout requires guide_latent_only or control_latent_only so VLM video tokens cannot leak dropped guides")
+        return image_p, video_p
+
+    def get_auxiliary_video_loss(self, prediction, noisy_latents, batch):
+        if not self._video_auxiliary_losses.config:
+            self.additional_loss_logs = {}
+            return None
+        result, self.additional_loss_logs = self._video_auxiliary_losses(
+            prediction, noisy_latents, batch.latents, batch.sigmas, self.decode_latents,
+        )
+        return result
 
     def _build_condition(
         self, batch: "DataLoaderBatchDTO", latent_shape, device, dtype
@@ -1206,6 +1345,12 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                 "ref2va: every item in a batch must have the same number of "
                 "reference images"
             )
+        video_paths = getattr(batch, "control_video_paths_list", None) or []
+        video_count = len(video_paths[0]) if video_paths else 0
+        if any(len(paths) != video_count for paths in video_paths):
+            raise ValueError("Reference video counts must match across a batch; use batch_size 1 for variable counts")
+        image_p, video_p = self._reference_dropout_probabilities()
+        image_keep, _ = reference_keep_masks(batch, ref_count, video_count, image_p, video_p)
 
         _, h_lat, w_lat = latent_shape
         target_h, target_w = h_lat * 16, w_lat * 16
@@ -1220,6 +1365,8 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         all_rows = []
         blocks = []
         for ref_idx in range(ref_count):
+            if not image_keep[ref_idx]:
+                continue
             resized = []
             for c in controls_per_item:
                 img = c[ref_idx]
@@ -1341,10 +1488,18 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         ]
         cap.release()
         h0, w0 = frames[0].shape[:2]
-        # match the sample canvas's pixel area, own aspect kept
-        ph, pw = packing.reference_video_pixel_size(
-            w0, h0, gen_config.height, gen_config.width
-        )
+        if bool(self.model_config.model_kwargs.get("align_video_refs", False)):
+            # Same target/factor canvas rule as training; keep the exact aspect
+            # and an integer patch-grid ratio rather than matching only the area.
+            ph, pw = packing.aligned_reference_pixel_size(
+                int(gen_config.height), int(gen_config.width),
+                self._reference_downscale_factor(),
+            )
+        else:
+            # match the sample canvas's pixel area, own aspect kept
+            ph, pw = packing.reference_video_pixel_size(
+                w0, h0, gen_config.height, gen_config.width
+            )
         pixels = torch.from_numpy(np.stack(frames)).float() / 255.0 * 2.0 - 1.0
         pixels = pixels.permute(3, 0, 1, 2)[None]  # (1, 3, T, H, W)
         pixels = (
@@ -1427,12 +1582,21 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                 "ref2va: every item in a batch must have the same number of "
                 "reference videos"
             )
+        # Video guides use the target canvas divided by the factor; packing maps
+        # their coarse patches onto the target grid. Identity images keep their
+        # ordinary reference geometry.
+        align = bool(self.model_config.model_kwargs.get("align_video_refs", False))
         for ref_idx in range(vid_count):
+            selection = getattr(batch, "_h3_reference_keep", None)
+            if selection is not None and not selection[2][ref_idx]:
+                continue
             lats = []
             auds = []
             for per_item in paths_per_item:
                 entry = load_ref_video_latent(
-                    self, per_item[ref_idx], batch.dataset_config, target_h, target_w
+                    self, per_item[ref_idx], batch.dataset_config, target_h, target_w,
+                    align=align,
+                    reference_downscale_factor=self._reference_downscale_factor(),
                 )
                 lats.append(entry["latent"].to(device, torch.float32))
                 auds.append(entry.get("audio_rows"))

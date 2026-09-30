@@ -88,6 +88,9 @@ class FileItemDTO(
         )
         # D-OPSD: also cache teacher embeds with the item's own media as reference 1
         self.dopsd_self_ref = kwargs.get("dopsd_self_ref", False)
+        # control media rides as latents only, never into the text encoder
+        self.control_latent_only = kwargs.get("control_latent_only", False)
+        self.guide_latent_only = kwargs.get("guide_latent_only", False)
         self.te_padding_side = kwargs.get("te_padding_side", "right")
         self.latent_space_version = kwargs.get("latent_space_version", "sd1")
         self.text_embedding_space_version = kwargs.get("text_embedding_space_version", "sd1")

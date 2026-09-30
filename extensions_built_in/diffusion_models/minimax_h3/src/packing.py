@@ -288,6 +288,24 @@ class PackedLayout:
     num_condition_audio_rows: int = 0
 
 
+def validate_reference_downscale_factor(factor: int) -> int:
+    if isinstance(factor, bool) or not isinstance(factor, int) or factor < 1:
+        raise ValueError("reference_downscale_factor must be an integer >= 1")
+    return factor
+
+
+def aligned_reference_pixel_size(height: int, width: int, factor: int = 1):
+    """Exact target/reference ratio, with a valid VAE + 2x2 DiT patch grid."""
+    factor = validate_reference_downscale_factor(factor)
+    multiple = CANVAS_MULTIPLE * factor
+    if height <= 0 or width <= 0 or height % multiple or width % multiple:
+        raise ValueError(
+            f"aligned reference target dimensions ({height}x{width}) must be "
+            f"positive multiples of {multiple} for reference_downscale_factor={factor}"
+        )
+    return height // factor, width // factor
+
+
 def build_packed_sequence(
     text_token_tags: torch.Tensor,  # (L,) long: 1 text, 0 for vision-block rows
     num_latent_frames: int,
@@ -297,6 +315,8 @@ def build_packed_sequence(
     patch_size=(1, 2, 2),
     keyframe_anchors: Tuple[str, ...] = (),
     ref_blocks: Tuple[Tuple[int, int, int], ...] = (),
+    aligned_refs: Tuple[bool, ...] = (),
+    reference_downscale_factor: int = 1,
 ) -> PackedLayout:
     """Build the [text | conditions | target audio | target video] layout.
 
@@ -307,16 +327,49 @@ def build_packed_sequence(
     for images. References keep their OWN aspect on their own
     aspect-normalized grid; an image block advances the shared media clock by
     1.0, a video block by its temporal span, and the target streams start
-    after the cumulative advance)."""
+    after the cumulative advance).
+
+    ``aligned_refs`` marks blocks that should be *aligned* to the target rather
+    than placed beside it: an aligned block reuses the target's rotary clock and
+    the target's spatial grid, so its latent frame ``i`` and pixel ``(h, w)``
+    land on exactly the coordinates of the target's, and it does not advance the
+    media clock. That is the v2v/IC-LoRA arrangement — attention between a guide
+    row and the target row at the same position costs nothing positionally, which
+    is what makes frame-accurate control (pose, depth, a driving performance)
+    learnable. Ordinary references stay unaligned: an identity reference has no
+    spatial correspondence with the output and should not claim one.
+
+    A head-swap pack therefore uses both — an aligned guide video plus an
+    unaligned identity reference. Aligned blocks use the target's latent height
+    and width divided by ``reference_downscale_factor``. Their positions sample
+    the target grid at that stride (H3 already normalizes spatial coordinates).
+    Their frame count may be shorter, aligning from the target's first frame.
+    """
     if keyframe_anchors and ref_blocks:
         raise ValueError("keyframe_anchors and ref_blocks are mutually exclusive")
     _, ph, pw = patch_size
+    factor = validate_reference_downscale_factor(reference_downscale_factor)
     rows_per_frame = (latent_height // ph) * (latent_width // pw)
     num_text = int(text_token_tags.shape[0])
     # a ref block is (t_lat, h, w) or (t_lat, h, w, audio_latents): a video
     # reference's soundtrack packs as clean audio rows immediately BEFORE its
     # own video rows
     ref_blocks = tuple(tuple(b) + (0,) * (4 - len(b)) for b in ref_blocks)
+    aligned_flags = tuple(aligned_refs) + (False,) * (len(ref_blocks) - len(aligned_refs))
+    if len(aligned_flags) != len(ref_blocks):
+        raise ValueError(
+            f"aligned_refs has {len(aligned_refs)} entries for {len(ref_blocks)} ref blocks"
+        )
+    for (_, b_h, b_w, _), aligned in zip(ref_blocks, aligned_flags):
+        if aligned and (
+            b_h * factor != latent_height or b_w * factor != latent_width
+            or b_h <= 0 or b_w <= 0 or b_h % ph or b_w % pw
+        ):
+            raise ValueError(
+                "an aligned reference must match the target's latent resolution "
+                f"({latent_height}x{latent_width}) divided by "
+                f"reference_downscale_factor={factor}, on the patch grid; got {b_h}x{b_w}"
+            )
     ref_vid_rows = [t * (h // ph) * (w // pw) for t, h, w, _ in ref_blocks]
     ref_aud_rows = [a * AUDIO_CHANNELS for _, _, _, a in ref_blocks]
     num_cond = (
@@ -337,7 +390,12 @@ def build_packed_sequence(
     # text rows sit on the time axis at their row index; the media clock
     # continues from there past the reference blocks, so prompt length (and
     # reference count/length) shifts the whole media clock
-    media_advance = sum(_block_advance(t, a) for t, _, _, a in ref_blocks)
+    # Aligned blocks sit ON the target's clock, so they must not push it forward.
+    media_advance = sum(
+        _block_advance(t, a)
+        for (t, _, _, a), aligned in zip(ref_blocks, aligned_flags)
+        if not aligned
+    )
     media_origin = float(num_text) + media_advance
     position_ids = torch.zeros(seq_len, 3, dtype=torch.float64)
     position_ids[:num_text, 0] = torch.arange(num_text, dtype=torch.float64)
@@ -377,43 +435,56 @@ def build_packed_sequence(
         cond_video_idx.append(torch.arange(cond_start, audio_start))
         ref_cursor = audio_start
     for i, (ref_t, ref_h, ref_w, ref_a) in enumerate(ref_blocks):
-        # each reference on its own aspect-normalized grid (area-matched to
-        # the target, so the grids span comparable ranges)
-        ref_sqrt_area = math.sqrt(ref_h * ref_w)
-        w_grid = _spatial_position_grid(ref_w, pw, ref_sqrt_area)
-        ref_grid = torch.stack(
-            [
-                g.reshape(-1)
-                for g in torch.meshgrid(
-                    _spatial_position_grid(ref_h, ph, ref_sqrt_area),
-                    w_grid,
-                    indexing="ij",
-                )
-            ],
-            dim=-1,
-        )
+        aligned = aligned_flags[i]
+        if aligned:
+            # Coarse tokens occupy every factor-th target patch origin. Do NOT
+            # multiply H3's already area-normalized coordinates by the factor.
+            w_grid = width_grid[::factor]
+            ref_grid = frame_grid.reshape(
+                latent_height // ph, latent_width // pw, 2
+            )[::factor, ::factor].reshape(-1, 2)
+            block_clock = media_origin
+        else:
+            # each reference on its own aspect-normalized grid (area-matched to
+            # the target, so the grids span comparable ranges)
+            ref_sqrt_area = math.sqrt(ref_h * ref_w)
+            w_grid = _spatial_position_grid(ref_w, pw, ref_sqrt_area)
+            ref_grid = torch.stack(
+                [
+                    g.reshape(-1)
+                    for g in torch.meshgrid(
+                        _spatial_position_grid(ref_h, ph, ref_sqrt_area),
+                        w_grid,
+                        indexing="ij",
+                    )
+                ],
+                dim=-1,
+            )
+            block_clock = ref_clock
         if ref_a:
             # soundtrack rows first: channel-major, shared 40/s clock from the
             # block origin, width pinned to the ref grid's extremes
-            a_time = ref_clock + torch.arange(ref_a, dtype=torch.float64)
+            a_time = block_clock + torch.arange(ref_a, dtype=torch.float64)
+            audio_width_grid = width_grid if aligned else w_grid
             rows = slice(ref_cursor, ref_cursor + ref_aud_rows[i])
             position_ids[rows, 0] = a_time.repeat(AUDIO_CHANNELS)
             position_ids[rows, 2] = torch.cat(
                 [
-                    torch.full((ref_a,), float(w_grid[0]), dtype=torch.float64),
-                    torch.full((ref_a,), float(w_grid[-1]), dtype=torch.float64),
+                    torch.full((ref_a,), float(audio_width_grid[0]), dtype=torch.float64),
+                    torch.full((ref_a,), float(audio_width_grid[-1]), dtype=torch.float64),
                 ]
             )
             cond_audio_idx.append(torch.arange(rows.start, rows.stop))
             ref_cursor += ref_aud_rows[i]
         rows_per_ref_frame = ref_grid.shape[0]
         block = torch.empty(ref_t, rows_per_ref_frame, 3, dtype=torch.float64)
-        block[:, :, 0] = _temporal_position_grid(ref_t, ref_clock)[:, None]
+        block[:, :, 0] = _temporal_position_grid(ref_t, block_clock)[:, None]
         block[:, :, 1:] = ref_grid[None]
         position_ids[ref_cursor : ref_cursor + ref_vid_rows[i]] = block.reshape(-1, 3)
         cond_video_idx.append(torch.arange(ref_cursor, ref_cursor + ref_vid_rows[i]))
         ref_cursor += ref_vid_rows[i]
-        ref_clock += _block_advance(ref_t, ref_a)
+        if not aligned:
+            ref_clock += _block_advance(ref_t, ref_a)
 
     # audio rows: channel-major, one rotary unit per latent (40/s = 24fps*5/3),
     # no height coordinate, width pinned to the grid extremes per channel

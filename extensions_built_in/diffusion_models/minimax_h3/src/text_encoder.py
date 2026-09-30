@@ -120,6 +120,8 @@ def encode_minimax_h3_prompt(
     processor,  # Qwen3VLProcessor (needed only when keyframes are present)
     prompt: str,
     keyframes: Optional[List] = None,  # PIL images already on the target canvas
+    reference_videos: Optional[List] = None,  # videos sampled to 2 fps, each TCHW/THWC
+    reference_video_timestamps: Optional[List[List[float]]] = None,
     device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = None,
     max_length: Optional[
@@ -219,6 +221,41 @@ def encode_minimax_h3_prompt(
                     vision_ids
                 )
                 pic_idx += 1
+
+    if reference_videos:
+        vision = processor.video_processor(
+            videos=reference_videos, do_sample_frames=False, return_tensors="pt"
+        )
+        pixel_values_videos = vision["pixel_values_videos"]
+        video_grid_thw = vision["video_grid_thw"]
+        merge = processor.video_processor.merge_size**2
+        vision_start = tokenizer.convert_tokens_to_ids("<|vision_start|>")
+        vision_end = tokenizer.convert_tokens_to_ids("<|vision_end|>")
+        video_pad = tokenizer.convert_tokens_to_ids("<|video_pad|>")
+        for i in range(len(reference_videos)):
+            label_ids = tokenizer(f"<Video {i + 1}>: ", add_special_tokens=False)[
+                "input_ids"
+            ]
+            token_ids += label_ids
+            token_tags += [TEXT_TAG] * len(label_ids)
+            grid_t, grid_h, grid_w = (int(x) for x in video_grid_thw[i])
+            tokens_per_block = (grid_h * grid_w) // merge
+            timestamps = (
+                reference_video_timestamps[i]
+                if reference_video_timestamps is not None
+                else [j / 2.0 for j in range(grid_t * 2)]
+            )
+            if len(timestamps) % 2:
+                timestamps = list(timestamps) + [timestamps[-1]]
+            for block in range(grid_t):
+                ts_idx = min(block * 2, len(timestamps) - 2)
+                block_ts = (timestamps[ts_idx] + timestamps[ts_idx + 1]) / 2.0
+                time_ids = tokenizer(
+                    f"<{block_ts:.1f} seconds>", add_special_tokens=False
+                )["input_ids"]
+                vision_ids = [vision_start] + [video_pad] * tokens_per_block + [vision_end]
+                token_ids += time_ids + vision_ids
+                token_tags += [TEXT_TAG] * len(time_ids) + [VIDEO_TAG] * len(vision_ids)
 
     prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
     if max_length is not None and max_length > 0:

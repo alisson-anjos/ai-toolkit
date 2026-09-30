@@ -28,6 +28,7 @@ import { openUpsamplePromptsModal, toAspectRatio } from '@/components/UpsamplePr
 import { openPromptBoxEditor } from '@/components/PromptBoxEditorModal';
 import AddSingleImageModal, { openAddImageModal } from '@/components/AddSingleImageModal';
 import SampleControlImage from '@/components/SampleControlImage';
+import H3TrainingOptions from '@/components/H3TrainingOptions';
 import { FlipHorizontal2, FlipVertical2 } from 'lucide-react';
 import { handleModelArchChange } from './utils';
 import { IoFlaskSharp } from 'react-icons/io5';
@@ -81,6 +82,8 @@ export default function SimpleJob({
   }, [modelArch, jobType]);
 
   const isVideoModel = !!(modelArch?.group === 'video');
+  const isMinimaxRef = modelArch?.name === 'minimax_h3_ref2va';
+  const usesLatentGuides = isMinimaxRef && !!jobConfig.config.process[0].model.model_kwargs?.align_video_refs;
   const isAudioModel = !!(modelArch?.group === 'audio');
   // text-generating models: samples are media in, text out (no size)
   const isLlmModel = !!(modelArch?.group === 'llm');
@@ -348,6 +351,7 @@ export default function SimpleJob({
                   label={customOption.label}
                   checked={customOption.getValue(jobConfig)}
                   doc={customOption.doc}
+                  disabled={customOption.disabled?.(jobConfig)}
                   onChange={value => customOption.onChange(value, jobConfig, setJobConfig)}
                 />
               ) : (
@@ -356,11 +360,13 @@ export default function SimpleJob({
                   label={customOption.label}
                   value={customOption.getValue(jobConfig) ?? ''}
                   doc={customOption.doc}
+                  disabled={customOption.disabled?.(jobConfig)}
                   onChange={value => customOption.onChange(value, jobConfig, setJobConfig)}
                   options={customOption.options}
                 />
               ),
             )}
+            {isMinimaxRef && <H3TrainingOptions jobConfig={jobConfig} setJobConfig={setJobConfig} />}
             {modelArch?.modelNotes && (
               <div className="pt-2">
                 <button
@@ -1218,7 +1224,7 @@ export default function SimpleJob({
                       {modelArch?.additionalSections?.includes('datasets.multi_control_paths') && (
                         <>
                           <SelectInput
-                            label="Control Dataset 1"
+                            label={usesLatentGuides ? 'Guide Video Dataset / Reference 1' : 'Control Dataset 1'}
                             docKey="datasets.multi_control_paths"
                             value={dataset.control_path_1 ?? ''}
                             className="pt-2"
@@ -1231,7 +1237,7 @@ export default function SimpleJob({
                             options={[{ value: '', label: <>&nbsp;</> }, ...datasetOptions]}
                           />
                           <SelectInput
-                            label="Control Dataset 2"
+                            label={usesLatentGuides ? 'Reference / Guide Dataset 2' : 'Control Dataset 2'}
                             docKey="datasets.multi_control_paths"
                             value={dataset.control_path_2 ?? ''}
                             className="pt-2"
@@ -1244,7 +1250,7 @@ export default function SimpleJob({
                             options={[{ value: '', label: <>&nbsp;</> }, ...datasetOptions]}
                           />
                           <SelectInput
-                            label="Control Dataset 3"
+                            label={usesLatentGuides ? 'Reference / Mask Guide Dataset 3' : 'Control Dataset 3'}
                             docKey="datasets.multi_control_paths"
                             value={dataset.control_path_3 ?? ''}
                             className="pt-2"
@@ -1256,6 +1262,13 @@ export default function SimpleJob({
                             }
                             options={[{ value: '', label: <>&nbsp;</> }, ...datasetOptions]}
                           />
+                          {usesLatentGuides && (
+                            <p className="pt-2 text-sm text-gray-400">
+                              Video controls are aligned latent guides; images remain native references.
+                              Add an optional mask video in another channel, paired by filename with the target.
+                              Use the same channels and mask convention in training and sampling.
+                            </p>
+                          )}
                         </>
                       )}
                       <NumberInput
@@ -1907,12 +1920,12 @@ export default function SimpleJob({
                         </div>
                       </div>
                       {modelArch?.additionalSections?.includes('datasets.multi_control_paths') && (
-                        <FormGroup label="Control Images" className="pt-2 ml-4">
+                        <FormGroup label={usesLatentGuides ? 'Guide Videos, References & Masks' : 'Control Images'} className="pt-2 ml-4">
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-2 mt-2">
                             {['ctrl_img_1', 'ctrl_img_2', 'ctrl_img_3'].map((ctrlKey, ctrl_idx) => (
                               <SampleControlImage
                                 key={ctrlKey}
-                                instruction={`Add Control Image ${ctrl_idx + 1}`}
+                                instruction={usesLatentGuides ? `Add Guide / Reference ${ctrl_idx + 1}` : `Add Control Image ${ctrl_idx + 1}`}
                                 className=""
                                 src={sample[ctrlKey as keyof typeof sample] as string}
                                 onNewImageSelected={imagePath => {

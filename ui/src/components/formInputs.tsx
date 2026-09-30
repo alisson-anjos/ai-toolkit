@@ -154,10 +154,11 @@ export interface NumberInputProps extends InputProps {
   max?: number;
   // when true, clearing the input calls onChange(null) instead of being ignored
   allowEmpty?: boolean;
+  disabled?: boolean;
 }
 
 export const NumberInput = (props: NumberInputProps) => {
-  const { label, value, onChange, placeholder, required, min, max, allowEmpty, docKey = null } = props;
+  const { label, value, onChange, placeholder, required, min, max, allowEmpty, disabled, docKey = null } = props;
   let { doc } = props;
   if (!doc && docKey) {
     doc = getDoc(docKey);
@@ -185,6 +186,7 @@ export const NumberInput = (props: NumberInputProps) => {
       )}
       <input
         type="number"
+        disabled={disabled}
         value={inputValue}
         onChange={e => {
           const rawValue = e.target.value;

@@ -553,6 +553,7 @@ class SDTrainer(BaseSDTrainProcess):
         loss_target = self.train_config.loss_target
         is_reg = any(batch.get_is_reg_list())
         additional_loss = 0.0
+        auxiliary_video_prediction = noise_pred
 
         prior_mask_multiplier = None
         target_mask_multiplier = None
@@ -1090,6 +1091,12 @@ class SDTrainer(BaseSDTrainProcess):
 
 
         loss = loss + additional_loss
+        auxiliary_video_loss = getattr(self.sd, "get_auxiliary_video_loss", None)
+        if callable(auxiliary_video_loss):
+            term = auxiliary_video_loss(auxiliary_video_prediction, noisy_latents, batch)
+            if term is not None:
+                loss = loss + term
+            self.additional_logs.update(getattr(self.sd, "additional_loss_logs", None) or {})
         
         if hasattr(self.sd, "get_additional_loss"):
             additional_model_loss = self.sd.get_additional_loss(pred, target)

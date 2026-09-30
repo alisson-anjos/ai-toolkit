@@ -21,7 +21,10 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from toolkit.basic import get_quick_signature_string
-from .packing import reference_video_pixel_size
+from .packing import (
+    reference_video_pixel_size, aligned_reference_pixel_size,
+    validate_reference_downscale_factor,
+)
 
 
 def ref_frame_indices(total, src_fps, num_frames, dataset_fps, trim_tail):
@@ -164,17 +167,29 @@ def _cache_path(path: str, hash_dict: dict) -> str:
 
 @torch.no_grad()
 def load_ref_video_latent(
-    model, path: str, dataset_config, target_height: int, target_width: int
+    model, path: str, dataset_config, target_height: int, target_width: int,
+    align: bool = False,
+    reference_downscale_factor: int = 1,
 ) -> dict:
     """Returns {"latent": (C, T, h, w) cpu tensor, "num_frames": int},
     encoding + disk-caching on first use. ``model`` is the MinimaxH3 model
     (used for the VAE, audio encode and the frame-count snapper)."""
+    factor = validate_reference_downscale_factor(reference_downscale_factor)
+    if factor > 1 and not align:
+        raise ValueError("reference_downscale_factor > 1 requires an aligned reference")
+    aligned_size = aligned_reference_pixel_size(target_height, target_width, factor) if align else None
     mem_cache = getattr(model, "_ref_video_cache", None)
     if mem_cache is None:
         mem_cache = {}
         model._ref_video_cache = mem_cache
-    if path in mem_cache:
-        return mem_cache[path]
+    # The entry depends on the TARGET the ref was sized against, not just the file: with
+    # multi-resolution buckets the same guide is requested at several target sizes in one
+    # run, and a path-only key handed back whatever size happened to be encoded first.
+    # Unaligned that passed silently (the guide just sat on a wrong grid, and cost whatever
+    # its own size cost); aligned it raises "must share the target's latent resolution".
+    mem_key = (path, int(target_height), int(target_width), bool(align), factor)
+    if mem_key in mem_cache:
+        return mem_cache[mem_key]
 
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
@@ -198,10 +213,15 @@ def load_ref_video_latent(
     )
     hash_dict = {
         "signature": get_quick_signature_string(path),
-        "ref_sizing": "match_target_area",
+        # an aligned guide is resized to the target's EXACT grid, so the cache key
+        # needs the dimensions, not just the area -- two buckets with the same area
+        # and different aspects are different tensors here
+        "ref_sizing": "match_target_exact" if align else "match_target_area",
+        "reference_downscale_factor": factor,
         "target_area": int(target_height * target_width)
         if target_height and target_width
         else 0,
+        "target_hw": (int(target_height), int(target_width)) if align else 0,
         "num_frames": num_frames,
         "fps": dataset_config.fps,
         "trim_tail": trim_tail,
@@ -217,13 +237,18 @@ def load_ref_video_latent(
             "num_frames": int(sd["num_frames"].item()),
             "audio_rows": sd.get("audio_latent"),
         }
-        mem_cache[path] = entry
+        mem_cache[mem_key] = entry
         return entry
 
-    # match the target's pixel area (the dataset bucket the target trains at)
-    # with the ref's own aspect: same aspect -> identical size; aspect-
-    # preserving resize, no crop
-    out_h, out_w = reference_video_pixel_size(src_w, src_h, target_height, target_width)
+    if align:
+        # Encode on the target canvas divided by the factor. The resulting
+        # coarse patches span the target's coordinate space at packing time.
+        out_h, out_w = aligned_size
+    else:
+        # match the target's pixel area (the dataset bucket the target trains at)
+        # with the ref's own aspect: same aspect -> identical size; aspect-
+        # preserving resize, no crop
+        out_h, out_w = reference_video_pixel_size(src_w, src_h, target_height, target_width)
 
     indices = ref_frame_indices(
         total, src_fps, num_frames, dataset_config.fps, trim_tail
@@ -274,5 +299,5 @@ def load_ref_video_latent(
     os.makedirs(os.path.dirname(cache_file), exist_ok=True)
     save_file(state_dict, cache_file)
     entry = {"latent": latent, "num_frames": num_frames, "audio_rows": audio_rows}
-    mem_cache[path] = entry
+    mem_cache[mem_key] = entry
     return entry

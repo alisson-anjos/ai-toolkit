@@ -136,6 +136,10 @@ class MiniMaxH3Pipeline:
             num_audio_latents=a_lat,
             keyframe_anchors=anchors,
             ref_blocks=ref_blocks,
+            # same rule as training, from the same helper: a layout mismatch between the
+            # two is silent — sampling just quietly stops matching what was trained
+            aligned_refs=model._aligned_ref_flags(ref_blocks),
+            reference_downscale_factor=model._reference_downscale_factor(),
         )
         num_cond = layout.num_condition_video_rows
 

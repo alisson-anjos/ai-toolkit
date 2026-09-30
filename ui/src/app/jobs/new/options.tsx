@@ -47,6 +47,7 @@ export interface CustomModelSelectOption {
   getValue: (config: JobConfig) => string | undefined;
   onChange: (value: string, config: JobConfig, setJobConfig: (value: any, key: string) => void) => void;
   doc?: ConfigDoc;
+  disabled?: (config: JobConfig) => boolean;
 }
 
 export interface CustomModelCheckboxOption {
@@ -55,6 +56,7 @@ export interface CustomModelCheckboxOption {
   getValue: (config: JobConfig) => boolean;
   onChange: (value: boolean, config: JobConfig, setJobConfig: (value: any, key: string) => void) => void;
   doc?: ConfigDoc;
+  disabled?: (config: JobConfig) => boolean;
 }
 
 export type CustomModelOption = CustomModelSelectOption | CustomModelCheckboxOption;
