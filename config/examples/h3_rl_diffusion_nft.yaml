@@ -1,0 +1,163 @@
+# MiniMax H3 character swap: online RL (DiffusionNFT) on a LoRA. See docs/H3_RL_TRAINING.md
+job: extension
+config:
+  name: h3_character_swap_rl
+  process:
+  - type: diffusion_trainer
+    training_folder: output
+    sqlite_db_path: ./aitk_db.db
+    device: cuda
+    performance_log_every: 10
+    trigger_word: null
+    network:
+      type: lora
+      linear: 64
+      linear_alpha: 64
+      network_kwargs:
+        ignore_if_contains:
+        - adaln_proj
+      pretrained_lora_path: /path/to/your_character_swap_lora.safetensors
+    save:
+      dtype: bf16
+      save_every: 25
+      max_step_saves_to_keep: 8
+      save_format: diffusers
+      push_to_hub: false
+    datasets:
+    - caption_ext: txt
+      caption_dropout_rate: 0.0
+      cache_text_embeddings: true
+      cache_latents_to_disk: true
+      resolution:
+      - 384
+      auto_frame_count: false
+      shrink_video_to_frames: true
+      do_audio: false
+      flip_x: false
+      flip_y: false
+      random_crop: false
+      num_repeats: 1
+      network_weight: 1
+      is_reg: false
+      folder_path: /path/to/paired/targets
+      control_path_1: /path/to/paired/guides
+      control_role_1: guide
+      control_path_2: /path/to/paired/refs
+      control_role_2: reference
+      num_frames: 49
+      fps: 24
+    - caption_ext: txt
+      caption_dropout_rate: 0.0
+      cache_text_embeddings: true
+      cache_latents_to_disk: true
+      resolution:
+      - 384
+      auto_frame_count: false
+      shrink_video_to_frames: true
+      do_audio: false
+      flip_x: false
+      flip_y: false
+      random_crop: false
+      num_repeats: 1
+      network_weight: 1
+      is_reg: false
+      folder_path: /path/to/rl_source/targets
+      control_path_1: /path/to/rl_source/guides
+      control_role_1: guide
+      control_path_2: /path/to/rl_source/refs
+      control_role_2: reference
+      num_frames: 49
+      fps: 24
+    train:
+      batch_size: 1
+      steps: 400
+      gradient_accumulation: 1
+      train_unet: true
+      train_text_encoder: false
+      gradient_checkpointing: true
+      noise_scheduler: flowmatch
+      optimizer: adamw
+      lr: 0.0001
+      optimizer_params:
+        weight_decay: 0.0001
+      timestep_type: shift
+      content_or_style: balanced
+      cache_text_embeddings: true
+      unload_text_encoder: false
+      dtype: bf16
+      loss_type: mse
+      do_guidance_loss: true
+      guidance_loss_target: 3.5
+      audio_loss_multiplier: 1
+      skip_first_sample: true
+      force_first_sample: true
+      disable_sampling: true
+      ema_config:
+        use_ema: false
+        ema_decay: 0.99
+      bfs_nft:
+        group: 6
+        steps: 10
+        train_fraction: 0.3
+        mix_beta: 0.1
+        adv_clip_max: 5.0
+        ref_kl_coef: 0.0001
+        decay_schedule: delayed_linear_to_0_999
+        update_interval: 2
+        weights:
+          id: 1.0
+          bg: 1.0
+          light: 1.0
+          pose: 1.0
+          lips: 1.0
+        keep_rollouts: 2
+        src_datasets:
+        - rl_source
+        reward_python: ''
+        reward_models: {}
+    logging:
+      log_every: 1
+      use_ui_logger: true
+    model:
+      name_or_path: /path/to/minimax-h3
+      arch: minimax_h3_ref2va
+      quantize: true
+      qtype: convrot8
+      quantize_te: true
+      qtype_te: convrot8
+      low_vram: false
+      compile: false
+      layer_offloading: false
+      assistant_lora_path: /path/to/minimax-h3/training_adapters/minimax_h3_ref2va_training_adapter_v2.safetensors
+      model_kwargs:
+        partition: ref2va_pruned
+        align_video_refs: true
+        align_image_refs: true
+        guide_latent_only: true
+        control_latent_only: false
+        reference_downscale_factor: 1
+        dit_ref2va_pruned_path: /path/to/minimax-h3/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors
+        text_encoder_path: /path/to/minimax-h3/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors
+        video_vae_path: /path/to/minimax-h3/video_vae_fp16.safetensors
+        audio_vae_path: /path/to/minimax-h3/audio_vae_fp32.safetensors
+        sample_audio: false
+        guide_rope_layout: overlap
+        reference_rope_layout: native
+        reference_source_phase: false
+    sample:
+      sampler: flowmatch
+      sample_every: 100000
+      sample_start_step: 0
+      width: 512
+      height: 288
+      neg: ''
+      seed: 42
+      walk_seed: false
+      guidance_scale: 1
+      sample_steps: 28
+      num_frames: 107
+      fps: 24
+      samples: []
+meta:
+  name: '[name]'
+  version: '1.0'

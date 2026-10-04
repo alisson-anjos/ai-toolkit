@@ -30,6 +30,7 @@ import { openPromptBoxEditor } from '@/components/PromptBoxEditorModal';
 import AddSingleImageModal, { openAddImageModal } from '@/components/AddSingleImageModal';
 import SampleControlImage from '@/components/SampleControlImage';
 import H3TrainingOptions from '@/components/H3TrainingOptions';
+import H3RLOptions from '@/components/H3RLOptions';
 import { FlipHorizontal2, FlipVertical2 } from 'lucide-react';
 import { handleModelArchChange } from './utils';
 import { IoFlaskSharp } from 'react-icons/io5';
@@ -1166,6 +1167,11 @@ export default function SimpleJob({
                   )}
                 </div>
               </div>
+            </Card>
+          )}
+          {isMinimaxRef && (
+            <Card title="Reinforcement Learning (H3)" collapsible>
+              <H3RLOptions jobConfig={jobConfig} setJobConfig={setJobConfig} />
             </Card>
           )}
         </div>

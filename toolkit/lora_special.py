@@ -207,6 +207,17 @@ class FullModule(ToolkitModuleMixin, torch.nn.Module):
         # weight space application can't be done per sample, so use the mean (same as the DoRA path)
         mult = multiplier.mean() if isinstance(multiplier, torch.Tensor) else multiplier
 
+        if getattr(om, 'is_ostris_quantized', False):
+            # quantized linear: the base weight only exists in backend storage, so add the delta as a
+            # separate linear term. Exact for a linear map: (W + d) x + (b + d_b) = W x + b + (d x + d_b)
+            out = self.org_forward(x, *args, **kwargs)
+            d = self.diff.to(x.device) * mult
+            db = None
+            if self.diff_b is not None and getattr(om, 'bias', None) is not None:
+                db = self.diff_b.to(x.device) * mult
+            delta = torch.nn.functional.linear(x.to(d.dtype), d, db)
+            return out + delta.to(out.dtype)
+
         orig_weight = om._parameters['weight']
         # dequantize quantized weights to full precision so the delta can be added (the original
         # quantized tensor is restored in the finally block below)
@@ -509,7 +520,12 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                         all_layers = self.network_config is not None and getattr(self.network_config, 'all_layers', False)
                         is_leaf_with_weight = (
                             len(list(child_module.children())) == 0
-                            and isinstance(getattr(child_module, 'weight', None), torch.nn.Parameter)
+                            and (
+                                isinstance(getattr(child_module, 'weight', None), torch.nn.Parameter)
+                                # OstrisLinear (convrot8/nvfp4/fp8) drops the weight parameter and exposes a
+                                # dequantizing property instead; it still has a full-rank delta to train
+                                or getattr(child_module, 'is_ostris_quantized', False)
+                            )
                         )
                         matches_full_if_contains = len(self.full_if_contains) > 0 and (
                             any([word in clean_name for word in self.full_if_contains])
@@ -720,6 +736,32 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
         for lora in self.text_encoder_loras + self.unet_loras:
             assert lora.lora_name not in names, f"duplicated lora name: {lora.lora_name}"
             names.add(lora.lora_name)
+
+        # frozen_ranks {lora_name: k}: the first k ranks of those modules stay fixed and only the extra ranks learn;
+        # freeze_full: full-weight modules (.diff) stay fixed. Trains new ranks on top of an existing LoRA.
+        frozen_ranks = kwargs.get("frozen_ranks") or {}
+        freeze_full = bool(kwargs.get("freeze_full", False))
+        if frozen_ranks or freeze_full:
+            n_frozen = 0
+            for lora in self.text_encoder_loras + self.unet_loras:
+                if isinstance(lora, FullModule):
+                    if freeze_full:
+                        for prm in lora.parameters():
+                            prm.register_hook(lambda g: torch.zeros_like(g))
+                        n_frozen += 1
+                    continue
+                k = int(frozen_ranks.get(lora.lora_name, 0) or 0)
+                if k > 0:
+                    def _down(g, k=k):
+                        g = g.clone(); g[:k] = 0; return g
+                    def _up(g, k=k):
+                        g = g.clone(); g[:, :k] = 0; return g
+                    lora.lora_down.weight.register_hook(_down)
+                    lora.lora_up.weight.register_hook(_up)
+                    if getattr(lora.lora_up, "bias", None) is not None:
+                        lora.lora_up.bias.register_hook(lambda g: torch.zeros_like(g))
+                    n_frozen += 1
+            print(f"frozen base: {n_frozen} modules (rank slices / full diffs)")
 
         if self.full_train_in_out:
             print("full train in out")

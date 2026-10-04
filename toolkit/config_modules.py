@@ -626,6 +626,11 @@ class TrainConfig:
         self.do_blank_stabilization = kwargs.get('do_blank_stabilization', False)
         
         self.audio_loss_multiplier = kwargs.get("audio_loss_multiplier", 1.0)
+        # BFS scene losses (video): person-weighted MSE, background weight and a low-frequency (light/colour) term on
+        # the person, from person masks in <targets>/_person_masks/<name>.npy. None = off.
+        self.scene_loss = kwargs.get("scene_loss", None)
+        # online DiffusionNFT RL (toolkit/bfs_nft.py); a dict of its options turns it on
+        self.bfs_nft = kwargs.get("bfs_nft", None)
         
         # will throw detailed error when it goes over
         self.max_loss_debug: bool = kwargs.get("max_loss_debug", False)

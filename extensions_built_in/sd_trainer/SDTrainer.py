@@ -1,4 +1,5 @@
 import os
+import os
 import random
 from collections import OrderedDict
 from typing import Union, Literal, List, Optional
@@ -544,6 +545,30 @@ class SDTrainer(BaseSDTrainProcess):
         return output, batch.tensor.to(self.device_torch, dtype=get_torch_dtype(self.train_config.dtype))
 
     # you can expand these in a child class to make customization easier
+    def _bfs_person_masks(self, batch, shape):
+        """Person masks [B,1,T,h,w] on the latent grid (H3 frames per latent step 1,4,4,4,4) and a validity flag per
+        item, from <targets>/_person_masks/<name>.npy (uint8 [F,H,W]); None when no item has one."""
+        import numpy as np
+        B, C, T, h, w = shape
+        masks, valid = [], []
+        for fi in batch.file_items:
+            d, n = os.path.split(fi.path)
+            f = os.path.join(d, '_person_masks', os.path.splitext(n)[0] + '.npy')
+            if not os.path.exists(f):
+                masks.append(torch.zeros(T, h, w)); valid.append(0.0); continue
+            mk = torch.from_numpy(np.load(f)).float() / 255.0
+            per = [(1, 4, 4, 4, 4)[k % 5] for k in range(T)]
+            nf = sum(per)
+            idx = torch.linspace(0, mk.shape[0] - 1, nf).round().long()   # frames spread over the clip (shrink mode)
+            mk = torch.nn.functional.adaptive_max_pool2d(mk[idx][:, None], (h, w))[:, 0]
+            out, s0 = [], 0
+            for c in per:
+                out.append(mk[s0:s0 + c].amax(0)); s0 += c
+            masks.append((torch.stack(out) > 0.5).float()); valid.append(1.0)
+        if not any(valid):
+            return None
+        return torch.stack(masks)[:, None], torch.tensor(valid)
+
     def calculate_loss(
             self,
             noise_pred: torch.Tensor,
@@ -1046,10 +1071,31 @@ class SDTrainer(BaseSDTrainProcess):
                 # loss = loss + prior_loss
                 # loss = loss + prior_loss
             # loss = loss + prior_loss
+        scene_lf = None
+        sc = getattr(self.train_config, 'scene_loss', None)
+        if sc and len(noise_pred.shape) == 5 and target is not None:
+            pm = self._bfs_person_masks(batch, tuple(noise_pred.shape))
+            if pm is not None:
+                m, valid = pm
+                m = m.to(loss.device, dtype=loss.dtype)
+                w = float(sc.get('bg_weight', 1.0)) * (1 - m) + float(sc.get('person_weight', 2.0)) * m
+                w = w / w.mean(dim=(1, 2, 3, 4), keepdim=True)          # same overall scale as the plain loss
+                v = valid.to(loss.device, dtype=loss.dtype).view(-1, 1, 1, 1, 1)
+                loss = loss * (v * w + (1 - v))
+                lfw = float(sc.get('lowfreq_weight', 0.0))
+                if lfw > 0:
+                    k = int(sc.get('lowfreq_kernel', 4))
+                    d = (pred.float() - target.float())                  # flow matching: the x0 error, sign aside
+                    lf = torch.nn.functional.avg_pool3d(d, (1, k, k), stride=(1, k, k), ceil_mode=True)
+                    mp = torch.nn.functional.avg_pool3d(m.float(), (1, k, k), stride=(1, k, k), ceil_mode=True)
+                    scene_lf = ((lf ** 2) * mp).sum(dim=(1, 2, 3, 4)) / (mp.sum(dim=(1, 2, 3, 4)) * d.shape[1] + 1e-6)
+                    scene_lf = scene_lf * lfw * valid.to(scene_lf.device, dtype=scene_lf.dtype)
         if len(noise_pred.shape) == 5:
             loss = loss.mean([1, 2, 3, 4])
         else:
             loss = loss.mean([1, 2, 3])
+        if scene_lf is not None:
+            loss = loss + scene_lf.to(loss.dtype)
         # apply loss multiplier before prior loss
         # multiply by our mask
         try:
@@ -1474,6 +1520,9 @@ class SDTrainer(BaseSDTrainProcess):
         # only; the returned loss stays unscaled for logging.
         if getattr(self.sd, 'is_llm', False):
             return self.train_llm_accumulation(batch, accum_scale=accum_scale)
+        if getattr(self.train_config, 'bfs_nft', None):
+            from toolkit.bfs_nft import nft_step
+            return nft_step(self, batch, accum_scale=accum_scale)
         with torch.no_grad():
             self.timer.start('preprocess_batch')
             if isinstance(self.adapter, CustomAdapter):
