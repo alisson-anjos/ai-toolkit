@@ -22,7 +22,8 @@ Config (train.bfs_nft):
   adaptive_weight_min 1e-5, decay_schedule delayed_linear_to_0_999, update_interval 2,
   weights {id: 1, bg: 1, light: 1, pose: 1, lips: 1}, src_datasets [], keep_rollouts 2,
   reward_python (a python with insightface + ultralytics; default: this one),
-  reward_models {insightface_root, pose, seg} (defaults: ~/.insightface, yolov8m-pose.pt, yolov8m-seg.pt)
+  reward_models {insightface_root, pose, seg, dino} (defaults: ~/.insightface, yolov8m-pose.pt, yolov8m-seg.pt,
+  facebook/dinov2-base); weights may add char (DINOv2 subject identity)
 """
 from __future__ import annotations
 
@@ -67,7 +68,7 @@ def nft_loss(forward_pred, old_pred, ref_pred, x0, xt, t, reward_prob, beta, adv
 
 # below these spreads a reward's differences inside a group are measurement noise (ArcFace on tiny faces, ...):
 # z-normalising them would turn noise into full-size advantages, so the std is floored at this value
-STD_FLOOR = {"id": 0.03, "bg": 0.02, "light": 0.05, "pose": 0.03, "lips": 0.05}
+STD_FLOOR = {"id": 0.03, "bg": 0.02, "light": 0.05, "pose": 0.03, "lips": 0.05, "char": 0.02}
 
 
 def advantages(rewards: dict, weights: dict, floors: dict | None = None) -> torch.Tensor:
@@ -89,12 +90,13 @@ def advantages(rewards: dict, weights: dict, floors: dict | None = None) -> torc
 
 
 class RewardClient:
-    def __init__(self, python: str, models: dict | None = None):
+    def __init__(self, python: str, models: dict | None = None, weights: dict | None = None):
         import sys
         worker = os.path.join(os.path.dirname(__file__), "bfs_reward_worker.py")
         self.p = subprocess.Popen([python or sys.executable, worker], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   text=True, bufsize=1,
-                                  env=dict(os.environ, OMP_NUM_THREADS="8", BFS_REWARD_MODELS=json.dumps(models or {})))
+                                  env=dict(os.environ, OMP_NUM_THREADS="8", BFS_REWARD_MODELS=json.dumps(models or {}),
+                                           BFS_REWARD_KEYS=json.dumps(sorted(k for k, w in (weights or {}).items() if w))))
         while True:
             line = self.p.stdout.readline()
             if not line:
@@ -134,7 +136,7 @@ class NFTState:
         self.cfg["weights"] = {**DEFAULTS["weights"], **(cfg or {}).get("weights", {})}
         self.params = [p for p in trainer.network.parameters() if p.requires_grad]
         self.old = [p.detach().clone() for p in self.params]
-        self.rewards = RewardClient(self.cfg["reward_python"], self.cfg.get("reward_models"))
+        self.rewards = RewardClient(self.cfg["reward_python"], self.cfg.get("reward_models"), self.cfg["weights"])
         self.calls = 0
         self.log_path = os.path.join(trainer.save_root, "nft_log.jsonl")
         self.rollout_dir = os.path.join(trainer.save_root, "nft_rollouts")

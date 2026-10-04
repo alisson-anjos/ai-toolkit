@@ -41,10 +41,13 @@ references and cached text embeddings. These are the same inputs the normal H3 t
 | key | paired item (has a ground-truth target) | source item (no ground truth) |
 |---|---|---|
 | `id` | ArcFace cosine to the target's face (median over 6 frames) | ArcFace cosine to the **reference picture**, minus a penalty when the face still looks like the original person |
+| `char` | DINOv2 cosine between the generated subject crop and the target's subject crop | DINOv2 cosine between the generated subject crop and the **reference picture** (background removed); works for people seen from behind, anime characters and creatures, where ArcFace finds no face |
 | `bg` | PSNR outside the dilated person mask vs the target | PSNR outside the union of the original and generated person masks vs the **input clip** |
 | `light` | low-frequency Lab error inside the person mask vs the target | face shading layout (16×16 low-frequency luminance, correlation) and brightness vs the **original person's face**, who was lit by the scene itself |
 | `pose` | YOLOv8-pose keypoint similarity (OKS) vs the target, frame by frame | same, vs the input clip |
 | `lips` | correlation of the mouth-opening curve (68-point landmarks) + amplitude; neutral when nobody speaks | same, vs the input clip |
+
+Optional rewards are only computed when they have a weight (`char` loads DINOv2 on the GPU, ~350 MB).
 
 **Anti-copy gate (source mode).** If the generated face is still the original person (cosine > 0.45), that sample's
 `bg`, `light`, `pose` and `lips` drop to their floor. Copying the input would otherwise win three rewards out of four.
@@ -102,15 +105,16 @@ train:
     ref_kl_coef: 1.0e-4
     decay_schedule: delayed_linear_to_0_999
     update_interval: 2
-    weights: {id: 1, bg: 1, light: 1, pose: 1, lips: 1}
+    weights: {id: 1, char: 1, bg: 1, light: 1, pose: 1, lips: 1}
     src_datasets: [rl_source]
     keep_rollouts: 2
     reward_python: ''      # a python with insightface + ultralytics (empty = the trainer's)
-    reward_models: {}      # {insightface_root, pose, seg}; defaults ~/.insightface, yolov8m-pose.pt, yolov8m-seg.pt
+    reward_models: {}      # {insightface_root, pose, seg, dino}; defaults ~/.insightface, yolov8m-pose.pt,
+                           # yolov8m-seg.pt, facebook/dinov2-base
 ```
 
 A full example is in `config/examples/h3_rl_diffusion_nft.yaml`. Requirements for the reward process: `insightface`,
-`onnxruntime`, `ultralytics`, `opencv-python`. The buffalo_l face models and the YOLO weights download on first use.
+`onnxruntime`, `ultralytics`, `opencv-python` (+ `transformers` for the `char` reward). The buffalo_l face models and the YOLO weights download on first use.
 
 **Start from a LoRA that already does the task** (`network.pretrained_lora_path`). RL can only reinforce what the
 model sometimes gets right: if none of the 6 rollouts has the right light, there is nothing to pull toward.

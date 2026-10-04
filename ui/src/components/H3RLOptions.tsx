@@ -16,7 +16,7 @@ export const NFT_DEFAULTS = {
   adaptive_weight_min: 1e-5,
   decay_schedule: 'delayed_linear_to_0_999',
   update_interval: 2,
-  weights: { id: 1.0, bg: 1.0, light: 1.0, pose: 1.0, lips: 1.0 },
+  weights: { id: 1.0, char: 1.0, bg: 1.0, light: 1.0, pose: 1.0, lips: 1.0 },
   src_datasets: [] as string[],
   reward_python: '',
   reward_models: {} as Record<string, string>,
@@ -27,6 +27,7 @@ const SCENE_DEFAULTS = { person_weight: 2.0, bg_weight: 1.5, lowfreq_weight: 0.5
 
 const REWARDS: { key: keyof typeof NFT_DEFAULTS.weights; label: string; hint: string }[] = [
   { key: 'id', label: 'Identity (ArcFace)', hint: 'face of the result vs the reference (or the real target)' },
+  { key: 'char', label: 'Character (DINOv2)', hint: 'whole-subject look vs the reference: works from behind, for anime and creatures' },
   { key: 'bg', label: 'Background', hint: 'PSNR outside the person mask vs the input / target' },
   { key: 'light', label: 'Lighting', hint: 'low-frequency colour (target) or face shading vs the original face' },
   { key: 'pose', label: 'Pose', hint: 'body keypoint similarity (YOLOv8-pose) frame by frame' },
@@ -93,7 +94,7 @@ export default function H3RLOptions({ jobConfig, setJobConfig }: Props) {
           </FormGroup>
 
           <FormGroup label="Reward weights">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-3">
               {REWARDS.map(r => (
                 <NumberInput key={r.key} label={r.label} min={0}
                   value={(nft.weights ?? NFT_DEFAULTS.weights)[r.key] ?? 0}
@@ -131,6 +132,8 @@ export default function H3RLOptions({ jobConfig, setJobConfig }: Props) {
                 onChange={v => set('reward_models', { ...models, pose: v })} />
               <TextInput label="YOLO person segmentation model" value={models.seg ?? ''} placeholder="yolov8m-seg.pt"
                 onChange={v => set('reward_models', { ...models, seg: v })} />
+              <TextInput label="DINOv2 model (character reward)" value={models.dino ?? ''} placeholder="facebook/dinov2-base"
+                onChange={v => set('reward_models', { ...models, dino: v })} />
             </div>
           </FormGroup>
         </>

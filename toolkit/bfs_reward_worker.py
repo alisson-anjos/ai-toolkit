@@ -20,6 +20,9 @@ ORIGINAL input video whose person is being replaced):
          person's face, who was lit by the scene itself
 
 Both modes:
+  char   character identity for ANY subject (people from behind, anime, creatures): DINOv2 cosine between the
+         generated subject crop and the reference picture (source mode) or the target's subject crop (paired mode);
+         computed only when the run gives it a weight
   lips   lip sync: correlation over time of the mouth opening (inner-lip height / width from the 68-point landmarks)
          between the generated and the original face, plus an amplitude match; None when the original does not speak
 """
@@ -32,8 +35,11 @@ import numpy as np
 
 # model locations (BFS_REWARD_MODELS, a JSON dict set by the trainer from train.bfs_nft.reward_models); unset entries
 # fall back to the defaults below, and a bare YOLO name ("yolov8m-pose.pt") is downloaded by ultralytics
-MODELS = {"insightface_root": os.path.expanduser("~/.insightface"), "pose": "yolov8m-pose.pt", "seg": "yolov8m-seg.pt"}
+MODELS = {"insightface_root": os.path.expanduser("~/.insightface"), "pose": "yolov8m-pose.pt", "seg": "yolov8m-seg.pt",
+          "dino": "facebook/dinov2-base"}
 MODELS.update({k: v for k, v in json.loads(os.environ.get("BFS_REWARD_MODELS") or "{}").items() if v})
+# rewards with a weight in the run (BFS_REWARD_KEYS); optional ones (char) are only computed when asked for
+KEYS = set(json.loads(os.environ.get("BFS_REWARD_KEYS") or "[]"))
 
 
 def _arcface():
@@ -107,6 +113,51 @@ def lips_reward(src_series, gen_frames):
     return corr - 0.3 * min(amp, 2.0)
 
 
+DINO = None
+
+
+def _dino():
+    import torch
+    from transformers import AutoImageProcessor, AutoModel
+    m = AutoModel.from_pretrained(MODELS["dino"]).to(DEV).eval()
+    return m, AutoImageProcessor.from_pretrained(MODELS["dino"])
+
+
+def dino_embed(images):
+    """L2-normalised DINOv2 CLS embeddings of RGB uint8 crops."""
+    import torch
+    global DINO
+    if DINO is None:
+        DINO = _dino()
+    m, proc = DINO
+    with torch.no_grad():
+        x = proc(images=[np.ascontiguousarray(i) for i in images], return_tensors="pt")["pixel_values"].to(DEV)
+        e = m(pixel_values=x).last_hidden_state[:, 0].float()
+    return torch.nn.functional.normalize(e, dim=-1).cpu().numpy()
+
+
+def subject_crop(frame, mask=None, pad=0.08):
+    """Crop around the subject: the given mask, else YOLO people, else the whole frame."""
+    m = mask if mask is not None and mask.any() else person_mask(frame)
+    if not m.any():
+        return frame
+    ys, xs = np.where(m)
+    H, W = frame.shape[:2]
+    py, px = int((ys.max() - ys.min()) * pad) + 2, int((xs.max() - xs.min()) * pad) + 2
+    return frame[max(0, ys.min() - py):min(H, ys.max() + py), max(0, xs.min() - px):min(W, xs.max() + px)]
+
+
+def ref_crop(ref):
+    """The reference without its plain (grey / white) background."""
+    d = np.abs(ref.astype(np.int16) - np.median(ref.reshape(-1, 3), 0).astype(np.int16)).sum(-1) > 30
+    return subject_crop(ref, d, pad=0.03) if d.any() else ref
+
+
+def char_reward(gen_frames, gen_masks, anchor_emb):
+    e = dino_embed([subject_crop(f, m) for f, m in zip(gen_frames, gen_masks)])
+    return float(np.median(e @ anchor_emb))
+
+
 def person_mask(frame_rgb):
     r = SEG(frame_rgb[..., ::-1].copy(), verbose=False, device=DEV, conf=0.3, classes=[0])[0]
     H, W = frame_rgb.shape[:2]
@@ -155,7 +206,8 @@ def rewards_source(gen, src, mask, ref, n_frames=6):
         else np.stack([person_mask(src[i]) for i in pick])
     s_kp = [keypoints(src[i]) for i in pick]
     s_lips = lip_series(src)
-    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "copy": []}
+    r_char = dino_embed([ref_crop(ref)])[0] if "char" in KEYS else None
+    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "copy": [], "char": []}
     for g in range(G):
         e = [x for x in (face_embed(gen[g, i]) for i in pick) if x is not None]
         if r_emb is None:
@@ -168,6 +220,7 @@ def rewards_source(gen, src, mask, ref, n_frames=6):
             out["id"].append(to_ref - 0.5 * max(0.0, to_src - 0.25))
             out["copy"].append(to_src)
         gm = np.stack([person_mask(gen[g, i]) for i in pick])
+        out["char"].append(char_reward(gen[g, pick], [a | b for a, b in zip(src_m, gm)], r_char) if r_char is not None else None)
         union = np.stack([cv2.dilate((a | b).astype(np.uint8), np.ones((k, k), np.uint8)) for a, b in zip(src_m, gm)]) > 0
         bgm = ~union
         diff = (gen[g, pick].astype(np.float32) - src[pick].astype(np.float32)) ** 2
@@ -182,6 +235,7 @@ def rewards_source(gen, src, mask, ref, n_frames=6):
             # the floor there instead (otherwise three rewards out of four would reward the hack)
             out["bg"][-1], out["light"][-1], out["pose"][-1] = 0.0, -1.0, 0.0
             out["lips"][-1] = None if out["lips"][-1] is None else -1.0
+            out["char"][-1] = None if out["char"][-1] is None else -1.0
     return out
 
 
@@ -233,7 +287,12 @@ def rewards(gen, tgt, mask, n_frames=6):
     t_lab = np.stack([cv2.cvtColor(cv2.GaussianBlur(tgt[i], (blur, blur), 0), cv2.COLOR_RGB2LAB) for i in pick]).astype(np.float32)
     t_kp = [keypoints(tgt[i]) for i in pick]
     t_lips = lip_series(tgt)
-    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": []}
+    t_char = None
+    if "char" in KEYS:
+        tm = m[pick] if mask is not None else [None] * len(pick)
+        t_char = dino_embed([subject_crop(tgt[i], x) for i, x in zip(pick, tm)])
+        t_char = t_char.mean(0) / (np.linalg.norm(t_char.mean(0)) + 1e-8)
+    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "char": []}
     for g in range(G):
         e = [x for x in (face_embed(gen[g, i]) for i in pick) if x is not None]
         out["id"].append(float(np.median([x @ t_emb for x in e])) if (e and t_emb is not None) else (0.0 if t_emb is not None else None))
@@ -251,6 +310,8 @@ def rewards(gen, tgt, mask, n_frames=6):
         out["pose"].append(float(np.mean(sims)) if sims else (0.0 if any(k is not None for k in t_kp) else None))
         out["light"].append(-float(np.abs(g_lab - t_lab)[sel].mean()) / 20.0 if sel.any() else None)
         out["lips"].append(lips_reward(t_lips, gen[g]))
+        out["char"].append(char_reward(gen[g, pick], list(m[pick]) if mask is not None else [None] * len(pick), t_char)
+                           if t_char is not None else None)
     return out
 
 
