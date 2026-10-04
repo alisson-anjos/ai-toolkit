@@ -65,8 +65,14 @@ def nft_loss(forward_pred, old_pred, ref_pred, x0, xt, t, reward_prob, beta, adv
     return (policy + ref_kl_coef * kl).mean(), {"policy": float(policy.detach().mean()), "kl": float(kl.detach().mean())}
 
 
-def advantages(rewards: dict, weights: dict) -> torch.Tensor:
-    """Each reward z-normalised inside the group (missing values -> 0), weighted sum."""
+# below these spreads a reward's differences inside a group are measurement noise (ArcFace on tiny faces, ...):
+# z-normalising them would turn noise into full-size advantages, so the std is floored at this value
+STD_FLOOR = {"id": 0.03, "bg": 0.02, "light": 0.05, "pose": 0.03, "lips": 0.05}
+
+
+def advantages(rewards: dict, weights: dict, floors: dict | None = None) -> torch.Tensor:
+    """Each reward normalised inside the group by max(std, floor) (missing values -> 0), weighted sum."""
+    floors = {**STD_FLOOR, **(floors or {})}
     total = None
     for k, w in weights.items():
         vals = rewards.get(k)
@@ -76,9 +82,8 @@ def advantages(rewards: dict, weights: dict) -> torch.Tensor:
         ok = ~torch.isnan(x)
         z = torch.zeros_like(x)
         if ok.sum() > 1:
-            sd = x[ok].std()
-            if sd > 1e-6:
-                z[ok] = (x[ok] - x[ok].mean()) / sd
+            sd = max(float(x[ok].std()), float(floors.get(k, 1e-6)))
+            z[ok] = (x[ok] - x[ok].mean()) / sd
         total = z * w if total is None else total + z * w
     return total if total is not None else torch.zeros(len(next(iter(rewards.values()))), dtype=torch.float64)
 
@@ -240,7 +245,7 @@ def nft_step(trainer, batch, accum_scale: float = 1.0) -> torch.Tensor:
     item = batch.file_items[0].path
     mask = _pixel_mask(item, tgt.shape[0], tgt.shape[1:3])
     r = st.rewards(gens, tgt, mask, _source_ref(item, c))
-    adv = advantages(r, c["weights"]).clamp(-c["adv_clip_max"], c["adv_clip_max"])
+    adv = advantages(r, c["weights"], c.get("std_floor")).clamp(-c["adv_clip_max"], c["adv_clip_max"])
     reward_prob = (adv / c["adv_clip_max"] / 2.0 + 0.5).float().to(dev)
     if int(c.get("keep_rollouts", 0)) and st.calls % 25 == 1:
         _save_rollouts(st, trainer, gens, tgt, r, adv, batch.file_items[0].path, int(c["keep_rollouts"]))
