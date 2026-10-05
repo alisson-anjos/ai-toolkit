@@ -285,7 +285,8 @@ class MinimaxH3Model(BaseModel):
             )
         return f"dit_{partition}"
 
-    def load_training_adapter(self, transformer: MiniMaxH3Transformer):
+    def load_training_adapter(self, transformer: MiniMaxH3Transformer, lora_path=None,
+                              adapter_name="assistant_lora", active=True):
         """Load an assistant LoRA (e.g. a de-distillation adapter) as a LIVE
         module: active during training, deactivated by the sampler. It is
         deliberately NOT merged into the base weights — the transformer is
@@ -299,8 +300,8 @@ class MinimaxH3Model(BaseModel):
         from toolkit.config_modules import NetworkConfig
         from toolkit.lora_special import LoRASpecialNetwork
 
-        self.print_and_status_update("Loading assistant LoRA")
-        lora_path = self.model_config.assistant_lora_path
+        self.print_and_status_update(f"Loading frozen {adapter_name}")
+        lora_path = lora_path or self.model_config.assistant_lora_path
         if not os.path.exists(lora_path):
             filename = os.path.basename(lora_path)
             found = find_file_recursive(os.path.join(MODELS_PATH, "loras"), filename)
@@ -328,7 +329,8 @@ class MinimaxH3Model(BaseModel):
                     raise ValueError(
                         f"Failed to download assistant LoRA from {lora_path}: {e}"
                     )
-            self.model_config.assistant_lora_path = lora_path
+            if adapter_name == "assistant_lora":
+                self.model_config.assistant_lora_path = lora_path
 
         # load the adapter; it stays a live module (never merged) and the
         # sampler toggles it off for previews
@@ -340,6 +342,23 @@ class MinimaxH3Model(BaseModel):
         )
         dim = int(lora_state_dict[dim_key].shape[0])
         lora_state_dict = self.convert_lora_weights_before_load(lora_state_dict)
+
+        adapter_kwargs = {}
+        if adapter_name == "nft_turbo_lora":
+            # DMAD has per-layer ranks (2..128). A fixed-rank loader silently
+            # truncates higher ranks, so build each frozen module at its exact rank.
+            dims, alphas = {}, {}
+            for key, value in lora_state_dict.items():
+                if key.endswith(".lora_A.weight"):
+                    prefix = key[:-len(".lora_A.weight")]
+                    name = prefix.replace(".", "$$")
+                    rank = int(value.shape[0])
+                    dims[name] = rank
+                    alpha = lora_state_dict.get(prefix + ".alpha")
+                    alphas[name] = float(alpha) if alpha is not None else rank
+            if not dims:
+                raise ValueError("Turbo adapter has no PEFT lora_A weights")
+            adapter_kwargs = {"modules_dim": dims, "modules_alpha": alphas}
 
         network_config = NetworkConfig(
             **{
@@ -365,11 +384,14 @@ class MinimaxH3Model(BaseModel):
             target_lin_modules=self.target_lora_modules,
             is_assistant_adapter=True,
             is_ara=True,
+            **adapter_kwargs,
         )
         network.apply_to(None, transformer, apply_text_encoder=False, apply_unet=True)
         network.force_to(self.device_torch, dtype=self.torch_dtype)
         network._update_torch_multiplier()
-        network.load_weights(lora_state_dict)
+        extra = network.load_weights(lora_state_dict)
+        if adapter_name == "nft_turbo_lora" and extra:
+            raise ValueError(f"Unmapped turbo weights: {list(extra)[:8]}")
 
         # frozen: the adapter shapes the training distribution but is never
         # itself trained, so its params must not collect gradients
@@ -378,14 +400,15 @@ class MinimaxH3Model(BaseModel):
             param.requires_grad_(False)
         network.eval()
 
-        self.assistant_lora: LoRASpecialNetwork = network
+        setattr(self, adapter_name, network)
 
         # live during training; the sampler's non-inverted assistant path
         # (BaseModel.generate_images) deactivates it for previews and turns
         # it back on afterwards
-        self.assistant_lora.multiplier = 1.0
-        self.assistant_lora.is_active = True
-        self.invert_assistant_lora = False
+        network.multiplier = 1.0
+        network.is_active = active
+        if adapter_name == "assistant_lora":
+            self.invert_assistant_lora = False
 
     def _load_transformer(self) -> MiniMaxH3Transformer:
         dit_path = self._resolve_comfy_file(self._dit_component())
@@ -511,6 +534,10 @@ class MinimaxH3Model(BaseModel):
         # load assistant lora if specified (merged into the quantized weights)
         if self.model_config.assistant_lora_path is not None:
             self.load_training_adapter(transformer)
+
+        turbo_path = self.model_config.model_kwargs.get("nft_turbo_lora_path")
+        if turbo_path:
+            self.load_training_adapter(transformer, turbo_path, "nft_turbo_lora", active=False)
 
         # quantize + offload + placement, all driven by model_config
         transformer.aitk_post_load(**self.component_load_kwargs("transformer"))

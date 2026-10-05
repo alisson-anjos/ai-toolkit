@@ -32,6 +32,7 @@ import os
 import random
 import subprocess
 import tempfile
+from contextlib import contextmanager
 
 import numpy as np
 import torch
@@ -195,6 +196,29 @@ def _source_ref(item_path: str, cfg: dict) -> np.ndarray | None:
     return None
 
 
+@contextmanager
+def _rollout_adapter(trainer, cfg):
+    """Enable frozen DMAD only for generation, restoring the training adapter."""
+    if not cfg.get("rollout_turbo", False):
+        yield
+        return
+    turbo = getattr(trainer.sd, "nft_turbo_lora", None)
+    if turbo is None:
+        raise ValueError("bfs_nft.rollout_turbo requires model_kwargs.nft_turbo_lora_path")
+    assistant = getattr(trainer.sd, "assistant_lora", None)
+    turbo_was = turbo.is_active
+    assistant_was = assistant.is_active if assistant is not None else None
+    try:
+        turbo.is_active = True
+        if assistant is not None:
+            assistant.is_active = False
+        yield
+    finally:
+        turbo.is_active = turbo_was
+        if assistant is not None:
+            assistant.is_active = assistant_was
+
+
 def nft_step(trainer, batch, accum_scale: float = 1.0) -> torch.Tensor:
     from toolkit.train_tools import get_torch_dtype
     st: NFTState = getattr(trainer, "_bfs_nft", None)
@@ -217,6 +241,7 @@ def nft_step(trainer, batch, accum_scale: float = 1.0) -> torch.Tensor:
         x_target = (x_target.tensor if hasattr(x_target, "tensor") else x_target).to(dev, torch.float32)
     shape = tuple(x_target.shape)
     sig = _sigmas(trainer, int(c["steps"])).to(dev, torch.float32)
+    rollout_sig = _sigmas(trainer, int(c.get("rollout_steps", c["steps"]))).to(dev, torch.float32)
     G = int(c["group"])
     seeds = [random.randint(0, 2 ** 31 - 1) for _ in range(G)]
 
@@ -233,13 +258,13 @@ def nft_step(trainer, batch, accum_scale: float = 1.0) -> torch.Tensor:
     trainer.sd.unet.eval() if hasattr(trainer.sd.unet, "eval") else None
     st.swap_old()
     try:
-        with torch.no_grad(), net:
+        with _rollout_adapter(trainer, c), torch.no_grad(), net:
             for g in range(G):
                 gen = torch.Generator(device="cpu").manual_seed(seeds[g])
                 x = torch.randn(shape, generator=gen).to(dev)
-                for i in range(len(sig) - 1):
-                    v = pred(x, sig[i], seeds[g] + i)
-                    x = x + (sig[i + 1] - sig[i]) * v
+                for i in range(len(rollout_sig) - 1):
+                    v = pred(x, rollout_sig[i], seeds[g] + i)
+                    x = x + (rollout_sig[i + 1] - rollout_sig[i]) * v
                 x0s.append(x)
     finally:
         st.swap_old()
@@ -295,7 +320,9 @@ def nft_step(trainer, batch, accum_scale: float = 1.0) -> torch.Tensor:
             logs.append(m)
 
     with open(st.log_path, "a") as f:
-        f.write(json.dumps({"call": st.calls, "item": os.path.basename(batch.file_items[0].path), "rewards": r,
+        f.write(json.dumps({"call": st.calls, "sampling_steps": int(c.get("rollout_steps", c["steps"])),
+                            "training_grid_steps": int(c["steps"]),
+                            "rollout_turbo": bool(c.get("rollout_turbo", False)), "item": os.path.basename(batch.file_items[0].path), "rewards": r,
                             "adv": [round(float(a), 3) for a in adv], "loss": total,
                             "policy": float(np.mean([x["policy"] for x in logs])) if logs else 0.0,
                             "kl": float(np.mean([x["kl"] for x in logs])) if logs else 0.0}) + "\n")
