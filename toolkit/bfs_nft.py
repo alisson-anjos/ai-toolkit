@@ -92,10 +92,12 @@ def advantages(rewards: dict, weights: dict, floors: dict | None = None) -> torc
 class RewardClient:
     def __init__(self, python: str, models: dict | None = None, weights: dict | None = None):
         import sys
-        worker = os.path.join(os.path.dirname(__file__), "bfs_reward_worker.py")
+        worker = os.path.join(os.path.dirname(__file__), os.environ.get("BFS_REWARD_WORKER", "bfs_reward_worker.py"))
         self.p = subprocess.Popen([python or sys.executable, worker], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   text=True, bufsize=1,
                                   env=dict(os.environ, OMP_NUM_THREADS="8", BFS_REWARD_MODELS=json.dumps(models or {}),
+                                           BFS_INSIGHTFACE_ROOT=(models or {}).get("insightface_root", ""),
+                                           BFS_POSE_MODEL=(models or {}).get("pose", ""),
                                            BFS_REWARD_KEYS=json.dumps(sorted(k for k, w in (weights or {}).items() if w))))
         while True:
             line = self.p.stdout.readline()
@@ -136,6 +138,8 @@ class NFTState:
         self.cfg["weights"] = {**DEFAULTS["weights"], **(cfg or {}).get("weights", {})}
         self.params = [p for p in trainer.network.parameters() if p.requires_grad]
         self.old = [p.detach().clone() for p in self.params]
+        if self.cfg.get("reward_worker"):          # e.g. a frozen older worker, to reproduce a run exactly
+            os.environ["BFS_REWARD_WORKER"] = self.cfg["reward_worker"]
         self.rewards = RewardClient(self.cfg["reward_python"], self.cfg.get("reward_models"), self.cfg["weights"])
         self.calls = 0
         self.log_path = os.path.join(trainer.save_root, "nft_log.jsonl")

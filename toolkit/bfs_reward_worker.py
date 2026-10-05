@@ -205,7 +205,7 @@ def rewards_source(gen, src, mask, ref, n_frames=6):
     src_m = (np.stack([cv2.resize(mask[i], (W, H), interpolation=cv2.INTER_NEAREST) for i in pick]) > 0) if mask is not None \
         else np.stack([person_mask(src[i]) for i in pick])
     s_kp = [keypoints(src[i]) for i in pick]
-    s_lips = lip_series(src)
+    s_lips = lip_series(src) if (not KEYS or "lips" in KEYS) else None
     r_char = dino_embed([ref_crop(ref)])[0] if "char" in KEYS else None
     out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "copy": [], "char": []}
     for g in range(G):
@@ -229,7 +229,7 @@ def rewards_source(gen, src, mask, ref, n_frames=6):
         sims = [x for x in (oks(s_kp[j], keypoints(gen[g, i])) for j, i in enumerate(pick)) if x is not None]
         out["pose"].append(float(np.mean(sims)) if sims else (0.0 if any(x is not None for x in s_kp) else None))
         out["light"].append(light_vs_source(gen[g, pick], src[pick]))
-        out["lips"].append(lips_reward(s_lips, gen[g]))
+        out["lips"].append(lips_reward(s_lips, gen[g]) if s_lips is not None else None)
         if out["copy"][-1] is not None and out["copy"][-1] > 0.45:
             # still the original person: a copy of the input scores perfectly on scene, light and pose, so it gets
             # the floor there instead (otherwise three rewards out of four would reward the hack)
@@ -286,7 +286,7 @@ def rewards(gen, tgt, mask, n_frames=6):
     blur = max(3, int(min(H, W) / 12) | 1)
     t_lab = np.stack([cv2.cvtColor(cv2.GaussianBlur(tgt[i], (blur, blur), 0), cv2.COLOR_RGB2LAB) for i in pick]).astype(np.float32)
     t_kp = [keypoints(tgt[i]) for i in pick]
-    t_lips = lip_series(tgt)
+    t_lips = lip_series(tgt) if (not KEYS or "lips" in KEYS) else None
     t_char = None
     if "char" in KEYS:
         tm = m[pick] if mask is not None else [None] * len(pick)
@@ -309,7 +309,7 @@ def rewards(gen, tgt, mask, n_frames=6):
         sims = [x for x in (oks(t_kp[j], keypoints(gen[g, i])) for j, i in enumerate(pick)) if x is not None]
         out["pose"].append(float(np.mean(sims)) if sims else (0.0 if any(k is not None for k in t_kp) else None))
         out["light"].append(-float(np.abs(g_lab - t_lab)[sel].mean()) / 20.0 if sel.any() else None)
-        out["lips"].append(lips_reward(t_lips, gen[g]))
+        out["lips"].append(lips_reward(t_lips, gen[g]) if t_lips is not None else None)
         out["char"].append(char_reward(gen[g, pick], list(m[pick]) if mask is not None else [None] * len(pick), t_char)
                            if t_char is not None else None)
     return out
