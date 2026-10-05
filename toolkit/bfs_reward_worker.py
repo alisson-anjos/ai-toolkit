@@ -106,12 +106,19 @@ def lip_series(frames, step=2):
 
 
 def lips_reward(src_series, gen_frames):
-    """Correlation of the mouth-opening curves (+ amplitude); None when the original barely moves its mouth."""
+    """Lip sync. The original speaks: correlation of the mouth-opening curves (+ amplitude). The original's mouth is still:
+    penalise any mouth movement in the result (a model that keeps talking over a silent guide scores low)."""
     a = src_series
     ok_a = ~np.isnan(a)
-    if ok_a.sum() < 5 or np.nanstd(a) < 0.03:
+    if ok_a.sum() < 5:
         return None
     b = lip_series(gen_frames)
+    if np.nanstd(a) < 0.03:
+        ok = ok_a & ~np.isnan(b)
+        if ok.sum() < 5:
+            return None
+        moving = max(0.0, float(b[ok].std()) - float(a[ok].std()))
+        return float(1.0 - min(1.0, moving / 0.06))       # 1 = as still as the original, 0 = talking
     ok = ok_a & ~np.isnan(b)
     if ok.sum() < 5:
         return -0.5                                   # the face (or its mouth) is lost
