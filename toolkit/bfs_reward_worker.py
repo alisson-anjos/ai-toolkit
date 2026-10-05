@@ -20,9 +20,17 @@ ORIGINAL input video whose person is being replaced):
          person's face, who was lit by the scene itself
 
 Both modes:
+  gpt_id, gpt_q  a vision LLM judge (OpenAI, default gpt-5-mini): ONE call per group with one picture = the reference X and
+         the candidates A..F side by side (2 frames each); identity (face, hair, apparent gender / age, build vs X) and
+         quality (natural scene lighting, not pasted, no artefacts), 0-10 -> 0-1. Needs `judge_ref` in the npz and a key
+         (OPENAI_API_KEY or the file in BFS_OPENAI_KEY_FILE). Only computed when weighted; None when the call fails.
   char   character identity for ANY subject (people from behind, anime, creatures): DINOv2 cosine between the
          generated subject crop and the reference picture (source mode) or the target's subject crop (paired mode);
          computed only when the run gives it a weight
+  wpose  whole-body pose (ViTPose-L whole-body, 133 keypoints: body + feet, both hands with fingers, face): OKS per region
+         against the target / input frame by frame, each region normalised by its own size, body 0.5 / hands 0.3 /
+         face 0.2 (regions missing in either side are left out). Model: reward_models.vitpose (ONNX, GPU via the CUDA
+         execution provider). Only computed when weighted.
   lips   lip sync: correlation over time of the mouth opening (inner-lip height / width from the 68-point landmarks)
          between the generated and the original face, plus an amplitude match; None when the original does not speak
 """
@@ -114,6 +122,154 @@ def lips_reward(src_series, gen_frames):
 
 
 DINO = None
+VIT = None
+
+
+def _vitpose():
+    import onnxruntime as ort
+    path = MODELS.get("vitpose") or "vitpose-l-wholebody.onnx"
+    return ort.InferenceSession(path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+
+
+def _person_box(frame_rgb):
+    r = POSE(frame_rgb[..., ::-1].copy(), verbose=False, device=DEV, conf=0.25)[0]
+    if r.boxes is None or len(r.boxes) == 0:
+        return None
+    b = r.boxes.xyxy.cpu().numpy()
+    return b[int(np.argmax((b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])))]
+
+
+def wholebody(frames):
+    """[(133,2) xy, (133,) conf] or None per frame (biggest person), one batched ViTPose pass."""
+    global VIT
+    if VIT is None:
+        VIT = _vitpose()
+    crops, metas = [], []
+    for f in frames:
+        b = _person_box(f)
+        if b is None:
+            metas.append(None); continue
+        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        w, h = (b[2] - b[0]) * 1.25, (b[3] - b[1]) * 1.25
+        if w / h > 0.75: h = w / 0.75
+        else: w = h * 0.75
+        src = np.float32([[cx - w / 2, cy - h / 2], [cx + w / 2, cy - h / 2], [cx - w / 2, cy + h / 2]])
+        M = cv2.getAffineTransform(src, np.float32([[0, 0], [192, 0], [0, 256]]))
+        c = cv2.warpAffine(f, M, (192, 256), flags=cv2.INTER_LINEAR).astype(np.float32) / 255.0
+        c = (c - np.float32([0.485, 0.456, 0.406])) / np.float32([0.229, 0.224, 0.225])
+        crops.append(c.transpose(2, 0, 1)); metas.append((cx - w / 2, cy - h / 2, w, h))
+    if not crops:
+        return [None] * len(frames)
+    hm = VIT.run(None, {VIT.get_inputs()[0].name: np.stack(crops).astype(np.float32)})[0]
+    out, k = [], 0
+    for m in metas:
+        if m is None:
+            out.append(None); continue
+        H = hm[k]; k += 1
+        J, hh, ww = H.shape
+        idx = H.reshape(J, -1).argmax(1)
+        conf = H.reshape(J, -1).max(1)
+        ys, xs = idx // ww, idx % ww
+        x0, y0, w, h = m
+        xy = np.stack([x0 + (xs + 0.5) / ww * w, y0 + (ys + 0.5) / hh * h], 1)
+        out.append((xy, conf))
+    return out
+
+
+WB_REGIONS = {"body": (list(range(0, 23)), 0.5), "hands": (list(range(91, 133)), 0.3), "face": (list(range(23, 91)), 0.2)}
+
+
+def _region_oks(a, b, idx, k=0.06, thr=0.3):
+    (xa, ca), (xb, cb) = a, b
+    idx = np.array(idx)
+    vis = (ca[idx] > thr) & (cb[idx] > thr)
+    if vis.sum() < 3:
+        return None
+    pa, pb = xa[idx][vis], xb[idx][vis]
+    span = np.ptp(xa[idx][ca[idx] > thr], axis=0) if (ca[idx] > thr).sum() > 1 else np.array([1.0, 1.0])
+    area = max(1.0, float(span[0] * span[1]))
+    return float(np.exp(-((pa - pb) ** 2).sum(1) / (2 * area * k ** 2)).mean())
+
+
+def wpose_score(ref_kp, gen_kp):
+    """Mean over frames of the region-weighted OKS (body / hands / face), None when nothing comparable."""
+    vals = []
+    for a, b in zip(ref_kp, gen_kp):
+        if a is None or b is None:
+            continue
+        parts = [(w, _region_oks(a, b, idx)) for idx, w in WB_REGIONS.values()]
+        parts = [(w, v) for w, v in parts if v is not None]
+        if parts:
+            vals.append(sum(w * v for w, v in parts) / sum(w for w, _ in parts))
+    return float(np.mean(vals)) if vals else None
+
+JUDGE_MODEL = os.environ.get("BFS_JUDGE_MODEL") or "gpt-5-mini"
+JUDGE_Q = ("You judge AI character swaps. Column X is the REFERENCE character who must appear in the video. Columns {labels} "
+           "are candidate videos of the same scene (three frames each: start, middle, end, top to bottom). Judge every frame: a "
+           "candidate that drifts, misaligns or deforms in any frame scores lower. For EACH candidate give "
+           "integer scores 0-10: identity = how clearly it is the SAME character as X (face, hair length / style / colour, "
+           "apparent gender and age, body build; a candidate that keeps another person's face or hair scores low); quality = "
+           "natural result (lit by the scene, not pasted or flat, no artefacts, no distortion). Compare the candidates with "
+           "each other and use the full range so that the differences are visible. Reply with JSON only: "
+           "{{\"A\": {{\"identity\": n, \"quality\": n}}, ...}}")
+
+
+def _judge_client():
+    from openai import OpenAI
+    key = os.environ.get("OPENAI_API_KEY")
+    kf = os.environ.get("BFS_OPENAI_KEY_FILE") or os.path.expanduser("~/.config/bfs_openai_key")
+    if not key and os.path.exists(kf):
+        key = open(kf).read().strip()
+    return OpenAI(api_key=key) if key else None
+
+
+def judge(ref, gen, frames=(0.05, 0.5, 0.95), h=200, calls=2):
+    """[(identity, quality) in 0-1 or (None, None)] per candidate: `calls` vision-LLM calls, each with the candidates in a
+    different random order (un-shuffled and averaged), so the judge's position bias cancels instead of becoming signal."""
+    import random
+    G = gen.shape[0]
+    acc = [[[], []] for _ in range(G)]
+    for c in range(calls):
+        order = list(range(G)); random.shuffle(order)
+        r = _judge_once(ref, gen[order], frames, h)
+        for slot, g in enumerate(order):
+            a, b = r[slot]
+            if a is not None: acc[g][0].append(a); acc[g][1].append(b)
+    return [(float(np.mean(a)), float(np.mean(b))) if a else (None, None) for a, b in acc]
+
+
+def _judge_once(ref, gen, frames, h):
+    import base64
+    G, F = gen.shape[:2]
+    try:
+        client = _judge_client()
+        if client is None:
+            return [(None, None)] * G
+        cols, labels = [], [chr(65 + g) for g in range(G)]
+        rs = cv2.resize(ref, (int(ref.shape[1] * len(frames) * h / ref.shape[0]), len(frames) * h))
+        cols.append(rs)
+        for g in range(G):
+            fr = [gen[g, int((F - 1) * t)] for t in frames]
+            fr = [cv2.resize(f, (int(f.shape[1] * h / f.shape[0]), h)) for f in fr]
+            cols.append(np.vstack(fr))
+        heads = []
+        for lab, c in zip(["X"] + labels, cols):
+            band = np.full((36, c.shape[1], 3), 255, np.uint8)
+            cv2.putText(band, lab, (c.shape[1] // 2 - 10, 28), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
+            heads.append(np.vstack([band, c, np.full((c.shape[0] * 0 + 0, c.shape[1], 3), 255, np.uint8)]))
+        H = max(x.shape[0] for x in heads)
+        sheet = np.hstack([np.vstack([x, np.full((H - x.shape[0], x.shape[1], 3), 255, np.uint8)]) for x in heads])
+        sheet = np.hstack([np.hstack([c, np.full((H, 8, 3), 255, np.uint8)]) for c in [sheet]])
+        url = "data:image/jpeg;base64," + base64.b64encode(cv2.imencode(".jpg", sheet[..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, 85])[1]).decode()
+        r = client.responses.create(model=JUDGE_MODEL, reasoning={"effort": "low"}, input=[{"role": "user", "content": [
+            {"type": "input_text", "text": JUDGE_Q.format(labels=", ".join(labels))},
+            {"type": "input_image", "image_url": url, "detail": "high"}]}])
+        t = r.output_text
+        d = json.loads(t[t.find("{"):t.rfind("}") + 1])
+        return [(float(d[l]["identity"]) / 10.0, float(d[l]["quality"]) / 10.0) if l in d else (None, None) for l in labels]
+    except Exception as exc:  # noqa: BLE001 - no judge this step
+        print(f"judge failed: {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr, flush=True)
+        return [(None, None)] * G
 
 
 def _dino():
@@ -205,9 +361,10 @@ def rewards_source(gen, src, mask, ref, n_frames=6):
     src_m = (np.stack([cv2.resize(mask[i], (W, H), interpolation=cv2.INTER_NEAREST) for i in pick]) > 0) if mask is not None \
         else np.stack([person_mask(src[i]) for i in pick])
     s_kp = [keypoints(src[i]) for i in pick]
+    s_wb = wholebody([src[i] for i in pick]) if "wpose" in KEYS else None
     s_lips = lip_series(src) if (not KEYS or "lips" in KEYS) else None
     r_char = dino_embed([ref_crop(ref)])[0] if "char" in KEYS else None
-    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "copy": [], "char": []}
+    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "copy": [], "char": [], "wpose": []}
     for g in range(G):
         e = [x for x in (face_embed(gen[g, i]) for i in pick) if x is not None]
         if r_emb is None:
@@ -230,12 +387,14 @@ def rewards_source(gen, src, mask, ref, n_frames=6):
         out["pose"].append(float(np.mean(sims)) if sims else (0.0 if any(x is not None for x in s_kp) else None))
         out["light"].append(light_vs_source(gen[g, pick], src[pick]))
         out["lips"].append(lips_reward(s_lips, gen[g]) if s_lips is not None else None)
+        out["wpose"].append(wpose_score(s_wb, wholebody([gen[g, i] for i in pick])) if s_wb is not None else None)
         if out["copy"][-1] is not None and out["copy"][-1] > 0.45:
             # still the original person: a copy of the input scores perfectly on scene, light and pose, so it gets
             # the floor there instead (otherwise three rewards out of four would reward the hack)
             out["bg"][-1], out["light"][-1], out["pose"][-1] = 0.0, -1.0, 0.0
             out["lips"][-1] = None if out["lips"][-1] is None else -1.0
             out["char"][-1] = None if out["char"][-1] is None else -1.0
+            out["wpose"][-1] = None if out["wpose"][-1] is None else 0.0
     return out
 
 
@@ -273,7 +432,7 @@ def face_embed(frame_rgb):
     return e / (np.linalg.norm(e) + 1e-8)
 
 
-def rewards(gen, tgt, mask, n_frames=6):
+def rewards(gen, tgt, mask, n_frames=10):
     G, F = gen.shape[:2]
     pick = np.unique(np.linspace(0, F - 1, min(n_frames, F)).round().astype(int))
     t_emb = [e for e in (face_embed(tgt[i]) for i in pick) if e is not None]
@@ -286,13 +445,14 @@ def rewards(gen, tgt, mask, n_frames=6):
     blur = max(3, int(min(H, W) / 12) | 1)
     t_lab = np.stack([cv2.cvtColor(cv2.GaussianBlur(tgt[i], (blur, blur), 0), cv2.COLOR_RGB2LAB) for i in pick]).astype(np.float32)
     t_kp = [keypoints(tgt[i]) for i in pick]
+    t_wb = wholebody([tgt[i] for i in pick]) if "wpose" in KEYS else None
     t_lips = lip_series(tgt) if (not KEYS or "lips" in KEYS) else None
     t_char = None
     if "char" in KEYS:
         tm = m[pick] if mask is not None else [None] * len(pick)
         t_char = dino_embed([subject_crop(tgt[i], x) for i, x in zip(pick, tm)])
         t_char = t_char.mean(0) / (np.linalg.norm(t_char.mean(0)) + 1e-8)
-    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "char": []}
+    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "char": [], "wpose": []}
     for g in range(G):
         e = [x for x in (face_embed(gen[g, i]) for i in pick) if x is not None]
         out["id"].append(float(np.median([x @ t_emb for x in e])) if (e and t_emb is not None) else (0.0 if t_emb is not None else None))
@@ -310,6 +470,7 @@ def rewards(gen, tgt, mask, n_frames=6):
         out["pose"].append(float(np.mean(sims)) if sims else (0.0 if any(k is not None for k in t_kp) else None))
         out["light"].append(-float(np.abs(g_lab - t_lab)[sel].mean()) / 20.0 if sel.any() else None)
         out["lips"].append(lips_reward(t_lips, gen[g]) if t_lips is not None else None)
+        out["wpose"].append(wpose_score(t_wb, wholebody([gen[g, i] for i in pick])) if t_wb is not None else None)
         out["char"].append(char_reward(gen[g, pick], list(m[pick]) if mask is not None else [None] * len(pick), t_char)
                            if t_char is not None else None)
     return out
@@ -334,8 +495,14 @@ def main():
             _FACES.clear()
             d = np.load(req["npz"])
             mask = d["mask"] if "mask" in d.files else None
-            res = (rewards_source(d["gen"], d["tgt"], mask, d["ref"]) if "ref" in d.files
-                   else rewards(d["gen"], d["tgt"], mask))
+            gen = d["gen"]
+            res = (rewards_source(gen, d["tgt"], mask, d["ref"]) if "ref" in d.files
+                   else rewards(gen, d["tgt"], mask))
+            if KEYS & {"gpt_id", "gpt_q"}:
+                jref = d["judge_ref"] if "judge_ref" in d.files else d["tgt"][len(d["tgt"]) // 2]
+                jr = judge(jref, gen)
+                res["gpt_id"] = [a for a, _ in jr]
+                res["gpt_q"] = [b for _, b in jr]
         except Exception as exc:  # noqa: BLE001
             res = {"error": f"{type(exc).__name__}: {exc}"}
         print(json.dumps(res), flush=True)

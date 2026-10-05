@@ -69,7 +69,8 @@ def nft_loss(forward_pred, old_pred, ref_pred, x0, xt, t, reward_prob, beta, adv
 
 # below these spreads a reward's differences inside a group are measurement noise (ArcFace on tiny faces, ...):
 # z-normalising them would turn noise into full-size advantages, so the std is floored at this value
-STD_FLOOR = {"id": 0.03, "bg": 0.02, "light": 0.05, "pose": 0.03, "lips": 0.05, "char": 0.02}
+STD_FLOOR = {"id": 0.03, "bg": 0.02, "light": 0.05, "pose": 0.03, "lips": 0.05, "char": 0.02, "gpt_id": 0.05, "gpt_q": 0.05,
+             "wpose": 0.02}
 
 
 def advantages(rewards: dict, weights: dict, floors: dict | None = None) -> torch.Tensor:
@@ -94,9 +95,14 @@ class RewardClient:
     def __init__(self, python: str, models: dict | None = None, weights: dict | None = None):
         import sys
         worker = os.path.join(os.path.dirname(__file__), os.environ.get("BFS_REWARD_WORKER", "bfs_reward_worker.py"))
+        # onnxruntime's CUDA provider (ViTPose) needs cuDNN 9 / cuBLAS: use the copies that ship with that python's torch
+        import glob as _glob
+        venv = os.path.dirname(os.path.dirname(python or sys.executable))
+        nv = _glob.glob(os.path.join(venv, "lib", "python*", "site-packages", "nvidia", "*", "lib"))
+        ld = ":".join(nv + [os.environ.get("LD_LIBRARY_PATH", "")])
         self.p = subprocess.Popen([python or sys.executable, worker], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   text=True, bufsize=1,
-                                  env=dict(os.environ, OMP_NUM_THREADS="8", BFS_REWARD_MODELS=json.dumps(models or {}),
+                                  env=dict(os.environ, OMP_NUM_THREADS="8", LD_LIBRARY_PATH=ld, BFS_REWARD_MODELS=json.dumps(models or {}),
                                            BFS_INSIGHTFACE_ROOT=(models or {}).get("insightface_root", ""),
                                            BFS_POSE_MODEL=(models or {}).get("pose", ""),
                                            BFS_REWARD_KEYS=json.dumps(sorted(k for k, w in (weights or {}).items() if w))))
@@ -107,7 +113,8 @@ class RewardClient:
             if line.strip().startswith("{") and json.loads(line).get("ready"):
                 break
 
-    def __call__(self, gen: np.ndarray, tgt: np.ndarray, mask: np.ndarray | None, ref: np.ndarray | None = None) -> dict:
+    def __call__(self, gen: np.ndarray, tgt: np.ndarray, mask: np.ndarray | None, ref: np.ndarray | None = None,
+                 judge_ref: np.ndarray | None = None) -> dict:
         fd, path = tempfile.mkstemp(suffix=".npz")
         os.close(fd)
         try:
@@ -116,6 +123,8 @@ class RewardClient:
                 kw["mask"] = mask
             if ref is not None:
                 kw["ref"] = ref
+            if judge_ref is not None:
+                kw["judge_ref"] = judge_ref
             np.savez(path, **kw)
             self.p.stdin.write(json.dumps({"npz": path}) + "\n")
             self.p.stdin.flush()
@@ -178,6 +187,19 @@ def _pixel_mask(item_path: str, frames: int, size: tuple[int, int]) -> np.ndarra
     mk = np.load(f)
     idx = np.linspace(0, mk.shape[0] - 1, frames).round().astype(int)
     return np.stack([cv2.resize(mk[i], (size[1], size[0]), interpolation=cv2.INTER_NEAREST) for i in idx])
+
+
+def _any_ref(item_path: str) -> np.ndarray | None:
+    """<dataset>/refs/<name>.* for any item (the judge's reference picture), or None."""
+    import cv2
+    root = os.path.dirname(os.path.dirname(os.path.abspath(item_path)))
+    stem = os.path.splitext(os.path.basename(item_path))[0]
+    for ext in (".png", ".jpg", ".jpeg", ".webp"):
+        p = os.path.join(root, "refs", stem + ext)
+        if os.path.exists(p):
+            img = cv2.imread(p)
+            return None if img is None else img[..., ::-1].copy()
+    return None
 
 
 def _source_ref(item_path: str, cfg: dict) -> np.ndarray | None:
@@ -275,7 +297,8 @@ def nft_step(trainer, batch, accum_scale: float = 1.0) -> torch.Tensor:
         gens = np.stack([_to_uint8(trainer.sd.decode_latents(x.to(dtype))) for x in x0s])
     item = batch.file_items[0].path
     mask = _pixel_mask(item, tgt.shape[0], tgt.shape[1:3])
-    r = st.rewards(gens, tgt, mask, _source_ref(item, c))
+    jref = _any_ref(item) if any(k in c["weights"] for k in ("gpt_id", "gpt_q")) else None
+    r = st.rewards(gens, tgt, mask, _source_ref(item, c), jref)
     adv = advantages(r, c["weights"], c.get("std_floor")).clamp(-c["adv_clip_max"], c["adv_clip_max"])
     reward_prob = (adv / c["adv_clip_max"] / 2.0 + 0.5).float().to(dev)
     if int(c.get("keep_rollouts", 0)) and st.calls % 25 == 1:
