@@ -54,6 +54,12 @@ This is an experimental change to the proven recipe: rollout generation and upda
 
 ## Acceptance before a long run
 
+### Optional smaller rollout groups
+
+`train.bfs_nft.group` may be reduced from six to three to reduce per-step work without replacing DiffusionNFT. With eight rollout steps and three training timesteps per rollout, six candidates require 48 rollout predictions plus 54 update predictions and 18 backward calls; three require 24 rollout predictions plus 27 update predictions and nine backward calls. Gradient checkpointing adds recomputation. Total wall time will not necessarily halve because fixed costs remain. Smaller groups provide noisier within-group comparisons and require quality validation; one candidate cannot provide a useful within-group advantage.
+
+In this session the six-candidate experiment reached 27 completed steps, with a saved checkpoint and optimizer at 25. The authorized three-candidate continuation was launched in a separate output directory using copies of that step-25 checkpoint and optimizer, with 1,000 total trainer steps and saving every 25. Two unsaved completed steps were not carried over. The NFT rollout EMA and its call counter are not persisted by the current fork and restart from the resumed LoRA; this is not an exact state restoration. Keep original logs and map the new NFT calls to global trainer steps (new call 1 corresponds to trainer step 26). Do not claim a measured speedup until new steps complete, and do not mix the two group sizes into one reward window.
+
 Start from the s200 initialization, use one paired item, `train.steps: 1`, separate output name, group six and the complete forward/backward/reward cycle. Restrict the dataset with matching targets/guides/refs/masks, not by omitting required files. Do not resume the full experiment from its smoke checkpoint.
 
 ```bash
