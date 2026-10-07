@@ -70,7 +70,7 @@ def nft_loss(forward_pred, old_pred, ref_pred, x0, xt, t, reward_prob, beta, adv
 # below these spreads a reward's differences inside a group are measurement noise (ArcFace on tiny faces, ...):
 # z-normalising them would turn noise into full-size advantages, so the std is floored at this value
 STD_FLOOR = {"id": 0.03, "bg": 0.02, "light": 0.05, "pose": 0.03, "lips": 0.05, "char": 0.02, "gpt_id": 0.05, "gpt_q": 0.05,
-             "wpose": 0.02}
+             "wpose": 0.02, "layout": 0.02}
 
 
 def advantages(rewards: dict, weights: dict, floors: dict | None = None) -> torch.Tensor:
@@ -148,12 +148,28 @@ class NFTState:
         self.cfg["weights"] = {**DEFAULTS["weights"], **(cfg or {}).get("weights", {})}
         self.params = [p for p in trainer.network.parameters() if p.requires_grad]
         self.old = [p.detach().clone() for p in self.params]
+        # kl_anchor "init": the KL reference is the LoRA the run started from (kept on disk so a resume keeps it), not the
+        # base model with the LoRA off, so RL refines that LoRA instead of drifting / growing away from it
+        self.anchor = None
+        if self.cfg.get("kl_anchor") == "init":
+            ap = os.path.join(trainer.save_root, "nft_anchor.pt")
+            if os.path.exists(ap):
+                saved = torch.load(ap, map_location="cpu")
+                self.anchor = [t.to(p.device, p.dtype) for t, p in zip(saved, self.params)]
+            else:
+                self.anchor = [p.detach().clone() for p in self.params]
+                os.makedirs(trainer.save_root, exist_ok=True)
+                torch.save([t.cpu() for t in self.anchor], ap)
         if self.cfg.get("reward_worker"):          # e.g. a frozen older worker, to reproduce a run exactly
             os.environ["BFS_REWARD_WORKER"] = self.cfg["reward_worker"]
         self.rewards = RewardClient(self.cfg["reward_python"], self.cfg.get("reward_models"), self.cfg["weights"])
         self.calls = 0
         self.log_path = os.path.join(trainer.save_root, "nft_log.jsonl")
         self.rollout_dir = os.path.join(trainer.save_root, "nft_rollouts")
+
+    def swap_anchor(self):
+        for p, o in zip(self.params, self.anchor):
+            p.data, o.data = o.data, p.data
 
     def swap_old(self):
         for p, o in zip(self.params, self.old):
@@ -324,12 +340,20 @@ def nft_step(trainer, batch, accum_scale: float = 1.0) -> torch.Tensor:
                         old_p = pred(xt, s, seed)
                 finally:
                     st.swap_old()
-                was = net.is_active
-                net.is_active = False
-                try:
-                    ref_p = pred(xt, s, seed)
-                finally:
-                    net.is_active = was
+                if st.anchor is not None:
+                    st.swap_anchor()
+                    try:
+                        with net:
+                            ref_p = pred(xt, s, seed)
+                    finally:
+                        st.swap_anchor()
+                else:
+                    was = net.is_active
+                    net.is_active = False
+                    try:
+                        ref_p = pred(xt, s, seed)
+                    finally:
+                        net.is_active = was
             # backward INSIDE the network context: with gradient checkpointing the forward is recomputed during
             # backward, and leaving the context first switches the LoRA off for that recompute
             with net:

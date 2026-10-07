@@ -31,6 +31,9 @@ Both modes:
          against the target / input frame by frame, each region normalised by its own size, body 0.5 / hands 0.3 /
          face 0.2 (regions missing in either side are left out). Model: reward_models.vitpose (ONNX, GPU via the CUDA
          execution provider). Only computed when weighted.
+  layout subject layout: per frame IoU of the subject masks (people AND animals, COCO YOLO-seg: person, bird, cat, dog,
+         horse, sheep, cow, elephant, bear, zebra, giraffe) between the result and the target / input; catches a
+         subject that shrinks, zooms out or moves (wpose only sees people). Model: reward_models.seg_any. Only when weighted.
   lips   lip sync: correlation over time of the mouth opening (inner-lip height / width from the 68-point landmarks)
          between the generated and the original face, plus an amplitude match; None when the original does not speak
 """
@@ -130,6 +133,33 @@ def lips_reward(src_series, gen_frames):
 
 DINO = None
 VIT = None
+SEG_ANY = None
+SUBJECT_CLASSES = [0, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+
+
+def subject_mask(frame_rgb):
+    global SEG_ANY
+    if SEG_ANY is None:
+        from ultralytics import YOLO
+        SEG_ANY = YOLO(MODELS.get("seg_any") or "yolov8m-seg.pt")
+    r = SEG_ANY(frame_rgb[..., ::-1].copy(), verbose=False, device=DEV, conf=0.3, classes=SUBJECT_CLASSES)[0]
+    H, W = frame_rgb.shape[:2]
+    m = np.zeros((H, W), bool)
+    if r.masks is not None:
+        for mm in r.masks.data.cpu().numpy():
+            m |= cv2.resize(mm, (W, H)) > 0.5
+    return m
+
+
+def layout_score(ref_masks, gen_frames):
+    vals = []
+    for a, f in zip(ref_masks, gen_frames):
+        b = subject_mask(f)
+        u = (a | b).sum()
+        if a.sum() < 50 or u == 0:
+            continue
+        vals.append(float((a & b).sum() / u))
+    return float(np.mean(vals)) if vals else None
 
 
 def _vitpose():
@@ -369,9 +399,10 @@ def rewards_source(gen, src, mask, ref, n_frames=6):
         else np.stack([person_mask(src[i]) for i in pick])
     s_kp = [keypoints(src[i]) for i in pick]
     s_wb = wholebody([src[i] for i in pick]) if "wpose" in KEYS else None
+    s_lay = [subject_mask(src[i]) for i in pick] if "layout" in KEYS else None
     s_lips = lip_series(src) if (not KEYS or "lips" in KEYS) else None
     r_char = dino_embed([ref_crop(ref)])[0] if "char" in KEYS else None
-    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "copy": [], "char": [], "wpose": []}
+    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "copy": [], "char": [], "wpose": [], "layout": []}
     for g in range(G):
         e = [x for x in (face_embed(gen[g, i]) for i in pick) if x is not None]
         if r_emb is None:
@@ -395,6 +426,7 @@ def rewards_source(gen, src, mask, ref, n_frames=6):
         out["light"].append(light_vs_source(gen[g, pick], src[pick]))
         out["lips"].append(lips_reward(s_lips, gen[g]) if s_lips is not None else None)
         out["wpose"].append(wpose_score(s_wb, wholebody([gen[g, i] for i in pick])) if s_wb is not None else None)
+        out["layout"].append(layout_score(s_lay, [gen[g, i] for i in pick]) if s_lay is not None else None)
         if out["copy"][-1] is not None and out["copy"][-1] > 0.45:
             # still the original person: a copy of the input scores perfectly on scene, light and pose, so it gets
             # the floor there instead (otherwise three rewards out of four would reward the hack)
@@ -453,13 +485,14 @@ def rewards(gen, tgt, mask, n_frames=10):
     t_lab = np.stack([cv2.cvtColor(cv2.GaussianBlur(tgt[i], (blur, blur), 0), cv2.COLOR_RGB2LAB) for i in pick]).astype(np.float32)
     t_kp = [keypoints(tgt[i]) for i in pick]
     t_wb = wholebody([tgt[i] for i in pick]) if "wpose" in KEYS else None
+    t_lay = [subject_mask(tgt[i]) for i in pick] if "layout" in KEYS else None
     t_lips = lip_series(tgt) if (not KEYS or "lips" in KEYS) else None
     t_char = None
     if "char" in KEYS:
         tm = m[pick] if mask is not None else [None] * len(pick)
         t_char = dino_embed([subject_crop(tgt[i], x) for i, x in zip(pick, tm)])
         t_char = t_char.mean(0) / (np.linalg.norm(t_char.mean(0)) + 1e-8)
-    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "char": [], "wpose": []}
+    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "char": [], "wpose": [], "layout": []}
     for g in range(G):
         e = [x for x in (face_embed(gen[g, i]) for i in pick) if x is not None]
         out["id"].append(float(np.median([x @ t_emb for x in e])) if (e and t_emb is not None) else (0.0 if t_emb is not None else None))
@@ -478,6 +511,7 @@ def rewards(gen, tgt, mask, n_frames=10):
         out["light"].append(-float(np.abs(g_lab - t_lab)[sel].mean()) / 20.0 if sel.any() else None)
         out["lips"].append(lips_reward(t_lips, gen[g]) if t_lips is not None else None)
         out["wpose"].append(wpose_score(t_wb, wholebody([gen[g, i] for i in pick])) if t_wb is not None else None)
+        out["layout"].append(layout_score(t_lay, [gen[g, i] for i in pick]) if t_lay is not None else None)
         out["char"].append(char_reward(gen[g, pick], list(m[pick]) if mask is not None else [None] * len(pick), t_char)
                            if t_char is not None else None)
     return out
