@@ -32,6 +32,7 @@ import os
 import random
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 
 import numpy as np
@@ -69,8 +70,29 @@ def nft_loss(forward_pred, old_pred, ref_pred, x0, xt, t, reward_prob, beta, adv
 
 # below these spreads a reward's differences inside a group are measurement noise (ArcFace on tiny faces, ...):
 # z-normalising them would turn noise into full-size advantages, so the std is floored at this value
-STD_FLOOR = {"id": 0.03, "bg": 0.02, "light": 0.05, "pose": 0.03, "lips": 0.05, "char": 0.02, "gpt_id": 0.05, "gpt_q": 0.05,
-             "wpose": 0.02, "layout": 0.02}
+STD_FLOOR = {"expr": 0.05, "id": 0.03, "bg": 0.02, "light": 0.05, "pose": 0.03, "lips": 0.05, "char": 0.02, "gpt_id": 0.05, "gpt_q": 0.05,
+             "wpose": 0.02, "layout": 0.02, "cam": 0.05, "cloth": 0.02}
+
+
+# a rollout the judge says is not the reference character (a copy of the guide person, a half swap) scores almost
+# perfectly on everything that follows the guide: those rewards get their floor, whether or not ArcFace found a face
+JUDGE_FLOOR = {"bg": 0.0, "light": -1.0, "pose": 0.0, "lips": -1.0, "wpose": 0.0, "expr": -1.0, "cam": 0.0, "layout": 0.0}
+
+
+def judge_gate(rewards: dict, gate: float | None) -> tuple[dict, int]:
+    """Floors the guide-following rewards of rollouts whose gpt_id is under `gate`; returns (rewards, how many)."""
+    ids = rewards.get("gpt_id")
+    if gate is None or not ids:
+        return rewards, 0
+    out = {k: list(v) for k, v in rewards.items()}
+    n = 0
+    for g, v in enumerate(ids):
+        if v is not None and float(v) < float(gate):
+            n += 1
+            for k, fl in JUDGE_FLOOR.items():
+                if out.get(k) and out[k][g] is not None:
+                    out[k][g] = fl
+    return out, n
 
 
 def advantages(rewards: dict, weights: dict, floors: dict | None = None) -> torch.Tensor:
@@ -144,6 +166,7 @@ class RewardClient:
 
 class NFTState:
     def __init__(self, trainer, cfg: dict):
+        os.environ["BFS_COPY_FLOOR_LAYOUT"] = "1" if cfg.get("copy_floor_layout") else "0"   # read by the reward worker
         self.cfg = {**DEFAULTS, **(cfg or {})}
         self.cfg["weights"] = {**DEFAULTS["weights"], **(cfg or {}).get("weights", {})}
         self.params = [p for p in trainer.network.parameters() if p.requires_grad]
@@ -165,6 +188,11 @@ class NFTState:
         self.rewards = RewardClient(self.cfg["reward_python"], self.cfg.get("reward_models"), self.cfg["weights"])
         self.calls = 0
         self.log_path = os.path.join(trainer.save_root, "nft_log.jsonl")
+        self.pool = None
+        if self.cfg.get("ref_pool"):          # a new reference character every step, made while the run trains
+            from toolkit.bfs_ref_pool import RefPool
+            self.pool = RefPool(self.cfg["ref_pool"])
+        self.pool_meta = None
         self.rollout_dir = os.path.join(trainer.save_root, "nft_rollouts")
 
     def swap_anchor(self):
@@ -226,12 +254,155 @@ def _source_ref(item_path: str, cfg: dict) -> np.ndarray | None:
         return None
     root = os.path.dirname(os.path.dirname(os.path.abspath(item_path)))
     stem = os.path.splitext(os.path.basename(item_path))[0]
-    for ext in (".png", ".jpg", ".jpeg", ".webp"):
-        p = os.path.join(root, "refs", stem + ext)
-        if os.path.exists(p):
-            img = cv2.imread(p)
-            return None if img is None else img[..., ::-1].copy()
+    # refs_reward/ (optional) is the picture the rewards compare against when the model is shown something else in
+    # refs/ (a character sheet, a close-up): one plain full-body picture of the same person
+    for sub in ("refs_reward", "refs"):
+        for ext in (".png", ".jpg", ".jpeg", ".webp"):
+            p = os.path.join(root, sub, stem + ext)
+            if os.path.exists(p):
+                img = cv2.imread(p)
+                return None if img is None else img[..., ::-1].copy()
     return None
+
+
+def _pool_group(item_path: str, cfg: dict) -> str | None:
+    """The ref_pool group of an item (its dataset path contains a key of ref_pool.datasets), or None."""
+    rp = cfg.get("ref_pool") or {}
+    for frag, group in (rp.get("datasets") or {}).items():
+        if frag in item_path:
+            return group
+    return None
+
+
+# caption words that assume a human, made generic when the pool character is not a person
+GENERIC_CAPTION = [("is the person shown in", "is the character shown in"),
+                   ("define the person in the target video", "define the character in the target video"),
+                   ("face, hair, skin,", "face, hair or fur, skin,"), ("facial structure, hairstyle, skin,", "facial structure, hair or fur, skin,")]
+
+
+_META_CACHE: dict[str, dict] = {}
+
+
+def _clip_desc(item_path: str) -> str:
+    """The description of the person in a clip, from <dataset>/meta.json {"<name>": {"desc": ...}} (rl_v2 style)."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(item_path)))
+    if root not in _META_CACHE:
+        f = os.path.join(root, "meta.json")
+        try:
+            _META_CACHE[root] = json.load(open(f)) if os.path.exists(f) else {}
+        except Exception:  # noqa: BLE001
+            _META_CACHE[root] = {}
+    m = _META_CACHE[root].get(os.path.splitext(os.path.basename(item_path))[0]) or {}
+    return str(m.get("desc") or "") if isinstance(m, dict) else ""
+
+
+def _pool_reference(trainer, st, batch, group: str, dev, dtype):
+    """Swap the batch's reference picture for a fresh pool character and re-encode the prompt with it (the cached
+    embeds hold the dataset's own picture). Returns (embeds, picture RGB uint8)."""
+    rp = st.cfg["ref_pool"]
+    img, meta = st.pool.take(group)
+    st.pool_meta = {k: meta.get(k) for k in ("category", "who", "file", "reused", "progress") if k in meta}
+    fi = batch.file_items[0]
+    ref = torch.from_numpy(img).permute(2, 0, 1).float().div(255.0)
+    flags = list(getattr(fi, "aligned_image_guide_flags", []) or [])
+    ctl = batch.control_tensor_list
+    if ctl is not None and len(ctl) and len(ctl[0]):
+        # the reference picture(s) = the image controls that are not aligned guides; the first one becomes the pool
+        # character (a second reference, if any, is kept as it is)
+        refs_idx = [i for i in range(len(ctl[0])) if not (i < len(flags) and flags[i])]
+        if not refs_idx:
+            raise ValueError("ref_pool: the item has no reference control to replace")
+        ctl[0][refs_idx[0]] = ref.to(ctl[0][refs_idx[0]].device, ctl[0][refs_idx[0]].dtype)
+    elif getattr(batch, "control_tensor", None) is not None:
+        batch.control_tensor = torch.nn.functional.interpolate(
+            ref[None], size=batch.control_tensor.shape[-2:], mode="bilinear", align_corners=False
+        ).to(batch.control_tensor.device, batch.control_tensor.dtype)
+    else:
+        raise ValueError("ref_pool: the item has no control images (needs a reference control path)")
+    caption = fi.caption or ""
+    who = str(meta.get("who") or "").strip()
+    if who and rp.get("caption_template", True):
+        # a caption built for this character: who comes in (the pool description) and who leaves (the clip's own
+        # description from <dataset>/meta.json "desc", e.g. "the young woman in a white blouse")
+        from toolkit.bfs_ref_pool import character_caption
+        target = _clip_desc(fi.path) or "the person"
+        st.pool_meta["caption"] = caption = character_caption(meta.get("category", "creature"), who, target)
+    elif who and rp.get("caption_who", True):
+        # name the character itself, as a prompt would: "<Subject 1> is the pale elf with pointed ears shown in ..."
+        for art in ("a ", "an "):
+            if who.lower().startswith(art):
+                who = who[len(art):]
+                break
+        caption = caption.replace("is the person shown in", f"is the {who} shown in", 1)
+    if meta.get("category") != "person" and not rp.get("caption_template", True):
+        for a, b in rp.get("caption_replace", GENERIC_CAPTION):
+            caption = caption.replace(a, b)
+        if meta.get("category") == "anime":
+            caption = caption.replace(" The result is a real, photographic video.", "")
+    target_size = (fi.crop_width, fi.crop_height) if getattr(fi, "crop_width", None) and getattr(fi, "crop_height", None) else None
+    sd = trainer.sd
+    with torch.no_grad():
+        pe = sd.encode_prompt(caption, control_images=[ref[None].to(dev, dtype)], target_size=target_size)
+    if not rp.get("te_on_gpu", True):
+        sd.text_encoder.to("cpu")
+        torch.cuda.empty_cache()
+    return pe.to(dev, dtype=dtype), img
+
+
+# How the source video reaches the model this step (bfs_nft.guide_modes = {mode: weight}):
+#   guide  - aligned guide latent, hidden from the text encoder (how the LoRAs are used with Add Guide)
+#   native - the same clip as a native reference video <Video 1> (own clock, seen by the text encoder), no guide
+#   both   - the aligned guide AND the clip as <Video 1>
+GUIDE_MODES = ("guide", "native", "both")
+
+
+def native_caption(caption: str) -> str:
+    """The caption with the source clip named as <Video 1> (images come first, so it is the first video)."""
+    c = caption.replace("The guide video provides the scene and the performance:",
+                        "<Video 1> is the guide video: it provides the scene and the performance:")
+    return c.replace(" in the guide video", " in <Video 1>").replace(" of the guide video", " of <Video 1>")
+
+
+def _pick_mode(cfg: dict) -> str:
+    w = {k: float(v) for k, v in (cfg.get("guide_modes") or {"guide": 1.0}).items() if k in GUIDE_MODES and float(v) > 0}
+    if not w:
+        return "guide"
+    return random.choices(list(w), weights=list(w.values()))[0]
+
+
+@contextmanager
+def _source_mode(trainer, batch, mode: str, dev, dtype):
+    """Rewires this step's source clip for `mode` and yields the prompt embeds to use (None = the cached ones).
+    The file item's flags are restored afterwards (items are reused every epoch)."""
+    vids = getattr(batch, "control_video_paths_list", None)
+    fi = batch.file_items[0]
+    flags = list(getattr(fi, "aligned_video_guide_flags", []) or [])
+    if mode == "guide" or not vids or not vids[0] or not any(flags):
+        yield None
+        return
+    sd = trainer.sd
+    old_vids, old_flags = [list(v) for v in vids], flags
+    old_native = set(getattr(sd, "_native_video_ref_paths", set()) or set())
+    gpath = vids[0][flags.index(True)]
+    paths, new_flags = ([gpath], [False]) if mode == "native" else ([gpath, gpath], [True, False])
+    try:
+        batch.control_video_paths_list = [paths]
+        fi.aligned_video_guide_flags = new_flags
+        sd._native_video_ref_paths = {gpath}
+        sd._ref_video_dataset_config = batch.dataset_config
+        img_flags = list(getattr(fi, "aligned_image_guide_flags", []) or [])
+        ctl = batch.control_tensor_list[0] if batch.control_tensor_list else []
+        refs = [ctl[i][None] if ctl[i].ndim == 3 else ctl[i] for i in range(len(ctl))
+                if not (i < len(img_flags) and img_flags[i])]
+        target = (fi.crop_width, fi.crop_height) if getattr(fi, "crop_width", None) and getattr(fi, "crop_height", None) else None
+        with torch.no_grad():
+            pe = sd.encode_prompt(native_caption(fi.caption or ""),
+                                  control_images=[[r.to(dev, dtype) for r in refs] + [gpath]], target_size=target)
+        yield pe.to(dev, dtype=dtype)
+    finally:
+        batch.control_video_paths_list = old_vids
+        fi.aligned_video_guide_flags = old_flags
+        sd._native_video_ref_paths = old_native
 
 
 @contextmanager
@@ -275,6 +446,19 @@ def nft_step(trainer, batch, accum_scale: float = 1.0) -> torch.Tensor:
         batch = trainer.preprocess_batch(batch)
         trainer.process_general_training_batch(batch)
         embeds = batch.prompt_embeds.clone().detach().to(dev, dtype=dtype)
+        pool_img, st.pool_meta = None, None
+        if st.pool is not None:      # the creature curriculum follows the run's progress
+            total = max(1, int(getattr(trainer.train_config, "steps", 1) or 1))
+            st.pool.progress = min(1.0, float(getattr(trainer, "step_num", st.calls)) / total)
+        group = _pool_group(batch.file_items[0].path, c) if st.pool is not None else None
+        if group:
+            embeds, pool_img = _pool_reference(trainer, st, batch, group, dev, dtype)
+        mode = _pick_mode(c)
+        st.mode_ctx = _source_mode(trainer, batch, mode, dev, dtype)
+        pe = st.mode_ctx.__enter__()
+        if pe is not None:
+            embeds = pe
+        st.mode = mode if pe is not None else "guide"
         x_target = batch.latents
         x_target = (x_target.tensor if hasattr(x_target, "tensor") else x_target).to(dev, torch.float32)
     shape = tuple(x_target.shape)
@@ -293,6 +477,7 @@ def nft_step(trainer, batch, accum_scale: float = 1.0) -> torch.Tensor:
 
     # 1. rollout with the old policy (plain ODE: DiffusionNFT needs no likelihoods)
     x0s = []
+    t_start = time.time()
     trainer.sd.unet.eval() if hasattr(trainer.sd.unet, "eval") else None
     st.swap_old()
     try:
@@ -308,25 +493,38 @@ def nft_step(trainer, batch, accum_scale: float = 1.0) -> torch.Tensor:
         st.swap_old()
 
     # 2. rewards against the real target
+    t_rollout = time.time()
     with torch.no_grad():
         tgt = _to_uint8(trainer.sd.decode_latents(x_target.to(dtype)))
         gens = np.stack([_to_uint8(trainer.sd.decode_latents(x.to(dtype))) for x in x0s])
     item = batch.file_items[0].path
     mask = _pixel_mask(item, tgt.shape[0], tgt.shape[1:3])
-    jref = _any_ref(item) if any(k in c["weights"] for k in ("gpt_id", "gpt_q")) else None
-    r = st.rewards(gens, tgt, mask, _source_ref(item, c), jref)
+    if pool_img is not None:          # the pool character is this step's reference for every reward
+        jref = pool_img if any(k in c["weights"] for k in ("gpt_id", "gpt_q")) else None
+        r = st.rewards(gens, tgt, mask, pool_img, jref)
+    else:
+        jref = _any_ref(item) if any(k in c["weights"] for k in ("gpt_id", "gpt_q")) else None
+        r = st.rewards(gens, tgt, mask, _source_ref(item, c), jref)
+    gate = c.get("judge_gate")
+    r, n_gated = judge_gate(r, gate)
+    ids = [v for v in (r.get("gpt_id") or []) if v is not None]
+    # every rollout failed the swap: no example to move toward, and the group would only rank copies against each other
+    skip_group = bool(c.get("skip_failed_groups")) and gate is not None and len(ids) == G and max(ids) < float(gate)
     adv = advantages(r, c["weights"], c.get("std_floor")).clamp(-c["adv_clip_max"], c["adv_clip_max"])
+    if skip_group:
+        adv = torch.zeros_like(adv)
     reward_prob = (adv / c["adv_clip_max"] / 2.0 + 0.5).float().to(dev)
     if int(c.get("keep_rollouts", 0)) and st.calls % 25 == 1:
-        _save_rollouts(st, trainer, gens, tgt, r, adv, batch.file_items[0].path, int(c["keep_rollouts"]))
+        _save_rollouts(st, trainer, gens, tgt, r, adv, batch.file_items[0].path, int(c["keep_rollouts"]), pool_img)
 
     # 3. DiffusionNFT update on a subset of the rollout timesteps
+    t_reward = time.time()
     trainer.sd.unet.train() if hasattr(trainer.sd.unet, "train") else None
     grid = sig[:-1]
     n_t = max(1, int(round(len(grid) * float(c["train_fraction"]))))
     total, logs = 0.0, []
     for g in range(G):
-        if adv[g] == 0 and not c["ref_kl_coef"]:
+        if skip_group or (adv[g] == 0 and not c["ref_kl_coef"]):
             continue
         for k in random.sample(range(len(grid)), n_t):
             s = grid[k]
@@ -372,17 +570,32 @@ def nft_step(trainer, batch, accum_scale: float = 1.0) -> torch.Tensor:
                             "rollout_turbo": bool(c.get("rollout_turbo", False)), "item": os.path.basename(batch.file_items[0].path), "rewards": r,
                             "adv": [round(float(a), 3) for a in adv], "loss": total,
                             "policy": float(np.mean([x["policy"] for x in logs])) if logs else 0.0,
-                            "kl": float(np.mean([x["kl"] for x in logs])) if logs else 0.0}) + "\n")
+                            "kl": float(np.mean([x["kl"] for x in logs])) if logs else 0.0,
+                            "judge_gated": n_gated, "skipped": skip_group, "mode": st.mode, "group": G, "seeds": seeds,
+                            "frames": int(shape[2]) if len(shape) == 5 else None,
+                            "secs": {"rollout": round(t_rollout - t_start, 1), "reward": round(t_reward - t_rollout, 1),
+                                     "update": round(time.time() - t_reward, 1)},
+                            **({"pool_ref": st.pool_meta} if st.pool_meta else {})}) + "\n")
+    st.mode_ctx.__exit__(None, None, None)
     return torch.tensor(total, device=dev)
 
 
-def _save_rollouts(st, trainer, gens, tgt, r, adv, item, keep):
-    """Best and worst rollout of the group next to the target, for eyeballing what the reward prefers."""
+def _save_rollouts(st, trainer, gens, tgt, r, adv, item, keep, ref=None):
+    """Best and worst rollout of the group next to the target (and the pool character), for eyeballing what the
+    reward prefers."""
     import cv2
     os.makedirs(st.rollout_dir, exist_ok=True)
     order = np.argsort(np.asarray(adv))
     picks = [order[-1], order[0]][:keep]
     rows = [tgt] + [gens[i] for i in picks]
+    if ref is not None:             # the step's pool character, held as a still column
+        h, w = tgt.shape[1:3]
+        s_ = min(h / ref.shape[0], w / ref.shape[1])
+        im = cv2.resize(ref, (max(1, int(ref.shape[1] * s_)), max(1, int(ref.shape[0] * s_))))
+        col = np.full((h, w, 3), 128, np.uint8)
+        y0, x0 = (h - im.shape[0]) // 2, (w - im.shape[1]) // 2
+        col[y0:y0 + im.shape[0], x0:x0 + im.shape[1]] = im
+        rows = [np.repeat(col[None], tgt.shape[0], 0)] + rows
     F = min(x.shape[0] for x in rows)
     path = os.path.join(st.rollout_dir, f"{st.calls:05d}_{os.path.splitext(os.path.basename(item))[0]}.mp4")
     H, W = rows[0].shape[1:3]

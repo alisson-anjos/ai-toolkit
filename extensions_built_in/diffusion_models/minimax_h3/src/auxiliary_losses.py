@@ -3,13 +3,55 @@
 ArcFace evaluator contract: RGB BCHW in [-1, 1], 112x112 face crops -> BxD.
 Pose evaluator contract: RGB BCHW in [0, 1], 256x256 -> BxKxHxW heatmaps.
 The pose model must expose differentiable heatmaps, not detected coordinates.
+Expression evaluator contract: RGB BCHW in [-1, 1], 192x192 face crops -> BxD expression features.
+crop: "face" finds the face in each TARGET frame (insightface detector, CPU) and crops the same square box from the
+prediction and the target; frames whose face is not confident or large enough (stylized characters, backs, small
+faces) get no term, and the share of frames used is logged.
 """
 import math
 from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-KINDS = {'pixel_l1', 'arcface', 'pose_heatmap'}
+KINDS = {'pixel_l1', 'arcface', 'pose_heatmap', 'expression'}
+FACE_DETECTOR = '/data/comfyui/models/insightface/models/buffalo_l/det_10g.onnx'
+_DETECTOR = []
+
+
+def _detector():
+    if not _DETECTOR:
+        from insightface.model_zoo import get_model
+        det = get_model(FACE_DETECTOR, providers=['CPUExecutionProvider'])
+        det.prepare(ctx_id=-1, input_size=(640, 640), det_thresh=0.5)
+        _DETECTOR.append(det)
+    return _DETECTOR[0]
+
+
+def face_boxes(frames, min_score=0.7, min_px=40):
+    """Largest confident face per frame of a [-1, 1] RGB BCHW batch -> list of (x0, y0, x1, y1) or None."""
+    import numpy as np
+    det = _detector()
+    out = []
+    imgs = ((frames.detach().float().clamp(-1, 1) + 1) * 127.5).round().byte().permute(0, 2, 3, 1).cpu().numpy()
+    for img in imgs:
+        boxes, _ = det.detect(np.ascontiguousarray(img[..., ::-1]), max_num=0)
+        best = None
+        for x0, y0, x1, y1, score in boxes:
+            if score >= min_score and (x1 - x0) >= min_px and (best is None or (x1 - x0) > (best[2] - best[0])):
+                best = (float(x0), float(y0), float(x1), float(y1))
+        out.append(best)
+    return out
+
+
+def square_crop(frame, box, expand, size):
+    """The square around a face box, grown by `expand`, clamped to the frame, resized to size x size."""
+    h, w = frame.shape[-2:]
+    x0, y0, x1, y1 = box
+    side = max(x1 - x0, y1 - y0) * expand
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    a, b = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
+    c, d = int(min(w, cx + side / 2)), int(min(h, cy + side / 2))
+    return F.interpolate(frame[None, :, b:max(b + 1, d), a:max(a + 1, c)], (size, size), mode='bilinear', align_corners=False)[0]
 
 
 def validate_auxiliary_losses(config):
@@ -33,6 +75,11 @@ def validate_auxiliary_losses(config):
         if kind != 'pixel_l1' and not Path(item.get('model_path', '')).is_file():
             raise ValueError(f'{kind} requires a local TorchScript model_path file')
         crop = item.get('crop', [0, 0, 1, 1])
+        if crop == 'face':
+            if kind not in ('arcface', 'expression'):
+                raise ValueError('crop: face is for arcface and expression')
+            result.append({**item, 'weight': float(weight), 'crop': 'face'})
+            continue
         if len(crop) != 4 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in crop):
             raise ValueError('Auxiliary crop must be [left, top, right, bottom] fractions')
         left, top, right, bottom = crop
@@ -89,8 +136,36 @@ class VideoAuxiliaryLosses:
         predicted, target = frames(predicted_video), frames(target_video).to(predicted_video.device)
         total = predicted.sum() * 0
         logs = {'loss/aux_active': float(active.float().mean())}
+        faces = None
         for spec in self.config:
             kind = spec['type']
+            if spec['crop'] == 'face':
+                if faces is None:
+                    faces = face_boxes(target, spec.get('face_min_score', 0.7), spec.get('face_min_px', 40))
+                keep = [i for i, b in enumerate(faces) if b is not None]
+                logs[f'loss/aux_{kind}_face_rate'] = len(keep) / max(1, len(faces))
+                if not keep:
+                    continue
+                size = 112 if kind == 'arcface' else 192
+                expand = spec.get('face_expand', 1.3 if kind == 'arcface' else 1.6)
+                p = torch.stack([square_crop(predicted[i], faces[i], expand, size) for i in keep])
+                t = torch.stack([square_crop(target[i], faces[i], expand, size) for i in keep])
+                model = self.evaluator(spec, p.device)
+                features = model(p)
+                with torch.no_grad():
+                    target_features = model(t)
+                if not features.requires_grad and p.requires_grad:
+                    raise RuntimeError(f'{kind} evaluator detached its output; it cannot train the model')
+                if kind == 'arcface':
+                    term = (1 - F.cosine_similarity(features.float(), target_features.float(), dim=-1)).mean()
+                else:
+                    term = F.mse_loss(features.float(), target_features.float())
+                if not torch.isfinite(term):
+                    raise RuntimeError(f'Non-finite auxiliary loss: {kind}')
+                total = total + spec['weight'] * term
+                logs[f'loss/aux_{kind}'] = float(term.detach())
+                logs[f'loss/aux_{kind}_weighted'] = float((spec['weight'] * term).detach())
+                continue
             left, top, right, bottom = spec['crop']
             h, w = predicted.shape[-2:]
             x0, y0 = int(left*w), int(top*h)

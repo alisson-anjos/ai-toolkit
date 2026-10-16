@@ -535,6 +535,18 @@ class MinimaxH3Model(BaseModel):
         if self.model_config.assistant_lora_path is not None:
             self.load_training_adapter(transformer)
 
+        # Optional frozen body-swap base. Keep it as a live frozen adapter so a
+        # separately injected trainable LoRA can learn an extension without
+        # modifying the base adapter or requantizing the H3 weights.
+        frozen_base_lora_path = self.model_config.model_kwargs.get("frozen_base_lora_path")
+        if frozen_base_lora_path:
+            self.load_training_adapter(
+                transformer,
+                frozen_base_lora_path,
+                adapter_name="frozen_base_lora",
+                active=True,
+            )
+
         turbo_path = self.model_config.model_kwargs.get("nft_turbo_lora_path")
         if turbo_path:
             self.load_training_adapter(transformer, turbo_path, "nft_turbo_lora", active=False)
@@ -1409,8 +1421,14 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         if not self._video_auxiliary_losses.config:
             self.additional_loss_logs = {}
             return None
+        sigmas = batch.sigmas
+        if sigmas is None:   # only the 'source' loss target fills batch.sigmas; flow matching: sigma = t / 1000
+            ts = getattr(batch, "aux_timesteps", None)
+            if ts is None:
+                raise ValueError("auxiliary video losses need the batch timesteps")
+            sigmas = ts.float() / 1000.0
         result, self.additional_loss_logs = self._video_auxiliary_losses(
-            prediction, noisy_latents, batch.latents, batch.sigmas, self.decode_latents,
+            prediction, noisy_latents, batch.latents, sigmas, self.decode_latents,
         )
         return result
 

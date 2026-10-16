@@ -27,6 +27,11 @@ Both modes:
   char   character identity for ANY subject (people from behind, anime, creatures): DINOv2 cosine between the
          generated subject crop and the reference picture (source mode) or the target's subject crop (paired mode);
          computed only when the run gives it a weight
+  cloth  clothing fidelity to the reference: the subject WITHOUT the head (everything below the shoulder line) against the
+         same region of the reference picture (source mode) or of the target (paired mode); 0.6 x DINOv2 cosine of the
+         crop (garment type, cut, pattern) + 0.4 x Lab colour-histogram overlap of its pixels (colours). In source mode it
+         is lowered when the result is closer to the ORIGINAL person's clothes than the reference is (keeping the guide's
+         outfit is the obvious hack). Computed only when the run gives it a weight.
   wpose  whole-body pose (ViTPose-L whole-body, 133 keypoints: body + feet, both hands with fingers, face): OKS per region
          against the target / input frame by frame, each region normalised by its own size, body 0.5 / hands 0.3 /
          face 0.2 (regions missing in either side are left out). Model: reward_models.vitpose (ONNX, GPU via the CUDA
@@ -131,6 +136,98 @@ def lips_reward(src_series, gen_frames):
     return corr - 0.3 * min(amp, 2.0)
 
 
+def expr_features(frame_rgb):
+    """Facial expression from the 68 landmarks, scale-free: eye openness (L, R), brow height, mouth opening, mouth
+    width and smile (mouth corners above / below the lip centre)."""
+    fs = faces(frame_rgb, FL)
+    if not fs:
+        return None
+    f = max(fs, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))
+    p = getattr(f, "landmark_3d_68", None)
+    if p is None or (f.bbox[3] - f.bbox[1]) < 32:
+        return None
+    p = p[:, :2]
+    d = np.linalg.norm(p[36] - p[45]) + 1e-6
+    eye_l = (np.linalg.norm(p[37] - p[41]) + np.linalg.norm(p[38] - p[40])) / 2 / (np.linalg.norm(p[36] - p[39]) + 1e-6)
+    eye_r = (np.linalg.norm(p[43] - p[47]) + np.linalg.norm(p[44] - p[46])) / 2 / (np.linalg.norm(p[42] - p[45]) + 1e-6)
+    eye_y = (p[36:48, 1].mean())
+    brow = (eye_y - p[17:27, 1].mean()) / d
+    width = np.linalg.norm(p[60] - p[64]) + 1e-6
+    mouth = (np.linalg.norm(p[61] - p[67]) + np.linalg.norm(p[62] - p[66]) + np.linalg.norm(p[63] - p[65])) / 3 / width
+    mw = np.linalg.norm(p[48] - p[54]) / d
+    smile = ((p[51, 1] + p[57, 1]) / 2 - (p[48, 1] + p[54, 1]) / 2) / d
+    return np.array([eye_l, eye_r, brow, mouth, mw, smile], np.float64)
+
+
+EXPR_MIN_STD = np.array([0.03, 0.03, 0.015, 0.03, 0.02, 0.015])   # a feature counts when the guide moves it this much
+
+
+def expr_series(frames, step=2):
+    rows = [expr_features(f) for f in frames[::step]]
+    return np.array([r if r is not None else np.full(6, np.nan) for r in rows])
+
+
+def expr_reward(src, gen_frames):
+    """Facial expression transfer. Level: every feature's average (wide-open eyes, raised brows, an open mouth held
+    still) close to the guide's. Motion: for every feature the guide really moves, the correlation of its curve with the
+    result's, minus an amplitude mismatch (a weaker or exaggerated grimace). None when the guide face is not seen;
+    -0.5 when the result loses the face."""
+    ok_a = ~np.isnan(src[:, 0])
+    if ok_a.sum() < 5:
+        return None
+    b = expr_series(gen_frames)
+    ok = ok_a & ~np.isnan(b[:, 0])
+    if ok.sum() < 5:
+        return -0.5
+    x_all, y_all = src[ok], b[ok]
+    level = float(np.mean(1.0 - np.minimum(1.0, np.abs(x_all.mean(0) - y_all.mean(0)) / (4 * EXPR_MIN_STD))))
+    moving = np.nanstd(src[ok_a], 0) >= EXPR_MIN_STD
+    if not moving.any():
+        return level
+    scores = []
+    for k in np.where(moving)[0]:
+        x, y = x_all[:, k], y_all[:, k]
+        corr = float(np.corrcoef(x, y)[0, 1]) if y.std() > 1e-5 else 0.0
+        amp = abs(np.log((y.std() + 1e-3) / (x.std() + 1e-3)))
+        scores.append(corr - 0.3 * min(amp, 2.0))
+    return 0.5 * level + 0.5 * float(np.mean(scores))
+
+
+def _bg_flows(frames, masks, w=192, step=2):
+    """Background optical flow between frames step apart (person mask dilated out), at a small width."""
+    import cv2
+    H = int(frames[0].shape[0] * w / frames[0].shape[1])
+    g = [cv2.cvtColor(cv2.resize(np.ascontiguousarray(f), (w, H)), cv2.COLOR_RGB2GRAY) for f in frames[::step]]
+    out = []
+    for i in range(len(g) - 1):
+        fl = cv2.calcOpticalFlowFarneback(g[i], g[i + 1], None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        bg = np.ones((H, w), bool)
+        if masks is not None:
+            m = masks[min(i * step, len(masks) - 1)].astype(np.uint8)
+            m = cv2.dilate(cv2.resize(m, (w, H), interpolation=cv2.INTER_NEAREST), np.ones((21, 21), np.uint8))
+            bg = m == 0
+        out.append((fl, bg))
+    return out
+
+
+def cam_reward(src_flows, gen_frames, masks):
+    """Camera motion: the result's background moves like the guide's (pans, handheld shake, orbits). Per frame pair,
+    the background flow error relative to the guide's own motion; 1 = same camera, 0 = static or another motion.
+    A guide with a still camera gives the result's motion vs nothing (a still result scores 1)."""
+    if not src_flows:
+        return None
+    gf = _bg_flows(gen_frames, masks)
+    vals = []
+    for (fa, bg), (fb, _) in zip(src_flows, gf):
+        if bg.sum() < 300:
+            continue
+        a, b = fa[bg], fb[bg]
+        epe = float(np.linalg.norm(a - b, axis=1).mean())
+        scale = float(np.linalg.norm(a, axis=1).mean()) + 0.3          # pixels at the flow width
+        vals.append(max(0.0, 1.0 - epe / scale))
+    return float(np.mean(vals)) if vals else None
+
+
 DINO = None
 VIT = None
 SEG_ANY = None
@@ -151,14 +248,27 @@ def subject_mask(frame_rgb):
     return m
 
 
+def _extent(m):
+    ys, xs = np.nonzero(m)
+    return ys.min(), ys.max(), xs.mean()
+
+
 def layout_score(ref_masks, gen_frames):
+    """Framing: the subject at the guide's place and size: top, bottom and horizontal centre of its mask (scale-free),
+    NOT its width, so a slimmer or broader body than the guide's is not punished (only zoom-out / shift is)."""
     vals = []
     for a, f in zip(ref_masks, gen_frames):
-        b = subject_mask(f)
-        u = (a | b).sum()
-        if a.sum() < 50 or u == 0:
+        if a.sum() < 50:
             continue
-        vals.append(float((a & b).sum() / u))
+        b = subject_mask(f)
+        if b.sum() < 50:
+            vals.append(0.0)
+            continue
+        H, W = a.shape[:2]
+        ta, ba, ca = _extent(a)
+        tb, bb, cb = _extent(b)
+        err = (abs(ta - tb) / H + abs(ba - bb) / H + abs(ca - cb) / W) / 3
+        vals.append(float(max(0.0, 1.0 - 4.0 * err)))
     return float(np.mean(vals)) if vals else None
 
 
@@ -245,7 +355,9 @@ JUDGE_Q = ("You judge AI character swaps. Column X is the REFERENCE character wh
            "are candidate videos of the same scene (three frames each: start, middle, end, top to bottom). Judge every frame: a "
            "candidate that drifts, misaligns or deforms in any frame scores lower. For EACH candidate give "
            "integer scores 0-10: identity = how clearly it is the SAME character as X (face, hair length / style / colour, "
-           "apparent gender and age, body build; a candidate that keeps another person's face or hair scores low); quality = "
+           "apparent gender and age, and X's OWN body build and proportions: slim, heavy, broad, muscular, tall; a candidate "
+           "that keeps another person's face, hair or body shape, e.g. X's clothes on a broader or heavier body than X's, "
+           "scores low); quality = "
            "natural result (lit by the scene, not pasted or flat, no artefacts, no distortion). Compare the candidates with "
            "each other and use the full range so that the differences are visible. Reply with JSON only: "
            "{{\"A\": {{\"identity\": n, \"quality\": n}}, ...}}")
@@ -351,6 +463,64 @@ def char_reward(gen_frames, gen_masks, anchor_emb):
     return float(np.median(e @ anchor_emb))
 
 
+def cloth_region(frame, mask=None):
+    """(crop on grey, Lab pixels) of the subject below the shoulder line, or None. The head is cut at the shoulders
+    (pose keypoints), else under the face box, else the top fifth of the subject."""
+    m = (mask if mask is not None and mask.any() else person_mask(frame)).copy()
+    if not m.any():
+        return None
+    ys, xs = np.where(m)
+    y0, y1 = int(ys.min()), int(ys.max())
+    cut = None
+    kp = keypoints(frame)
+    if kp is not None:
+        xy, cf, _ = kp
+        sh = [xy[i, 1] for i in (5, 6) if cf[i] > 0.3]
+        if sh:
+            w = abs(xy[5, 0] - xy[6, 0]) if cf[5] > 0.3 and cf[6] > 0.3 else 0.0
+            cut = int(min(sh) - 0.12 * w)                # a little above the shoulders: the collar stays in
+    if cut is None:
+        fs = faces(frame)
+        if fs:
+            f = max(fs, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))
+            cut = int(f.bbox[3])
+    if cut is None:
+        cut = y0 + int(0.2 * (y1 - y0))
+    m[:max(0, min(cut, y1 - 8))] = False
+    if m.sum() < 200:
+        return None
+    ys, xs = np.where(m)
+    img = np.where(m[..., None], frame, 128).astype(np.uint8)[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    return img, cv2.cvtColor(frame, cv2.COLOR_RGB2LAB)[m]
+
+
+def _lab_hist(px):
+    h = np.concatenate([np.histogramdd(px[:, 1:].astype(np.float32), bins=(12, 12), range=((0, 256), (0, 256)))[0].ravel(),
+                        np.histogram(px[:, 0], bins=8, range=(0, 256))[0].astype(np.float64)])
+    return h / (h.sum() + 1e-8) * 2.0                    # two histograms, each summing to 1
+
+
+def cloth_feature(regions):
+    """(mean DINOv2 embedding, mean Lab histogram) of a list of cloth_region results (Nones are skipped), or None."""
+    regions = [r for r in regions if r is not None]
+    if not regions:
+        return None
+    e = dino_embed([r[0] for r in regions]).mean(0)
+    return e / (np.linalg.norm(e) + 1e-8), np.mean([_lab_hist(r[1]) for r in regions], 0)
+
+
+def cloth_sim(a, b):
+    if a is None or b is None:
+        return None
+    return 0.6 * float(a[0] @ b[0]) + 0.4 * float(np.minimum(a[1], b[1]).sum() / 2.0)
+
+
+def ref_mask(ref):
+    """The subject of the reference picture: not its plain background when it has one, else the people in it."""
+    d = np.abs(ref.astype(np.int16) - np.median(ref.reshape(-1, 3), 0).astype(np.int16)).sum(-1) > 30
+    return d if 0.02 < d.mean() < 0.9 else person_mask(ref)
+
+
 def person_mask(frame_rgb):
     r = SEG(frame_rgb[..., ::-1].copy(), verbose=False, device=DEV, conf=0.3, classes=[0])[0]
     H, W = frame_rgb.shape[:2]
@@ -390,6 +560,8 @@ def light_vs_source(gen_frames, src_frames, margin=0.3):
 def rewards_source(gen, src, mask, ref, n_frames=6):
     G, F = gen.shape[:2]
     pick = np.unique(np.linspace(0, F - 1, min(n_frames, F)).round().astype(int))
+    if F > 110:      # a long clip: as many frames again from the last third, where identity and clothes drift
+        pick = np.unique(np.concatenate([pick, np.linspace(2 * F // 3, F - 1, n_frames).round().astype(int)]))
     r_emb = face_embed(ref)
     s_emb = [e for e in (face_embed(src[i]) for i in pick) if e is not None]
     s_emb = np.mean(s_emb, 0) / (np.linalg.norm(np.mean(s_emb, 0)) + 1e-8) if s_emb else None
@@ -397,12 +569,20 @@ def rewards_source(gen, src, mask, ref, n_frames=6):
     k = max(3, int(min(H, W) * 0.05) | 1)
     src_m = (np.stack([cv2.resize(mask[i], (W, H), interpolation=cv2.INTER_NEAREST) for i in pick]) > 0) if mask is not None \
         else np.stack([person_mask(src[i]) for i in pick])
-    s_kp = [keypoints(src[i]) for i in pick]
+    s_kp = [keypoints(src[i]) for i in pick] if "pose" in KEYS else []
     s_wb = wholebody([src[i] for i in pick]) if "wpose" in KEYS else None
     s_lay = [subject_mask(src[i]) for i in pick] if "layout" in KEYS else None
     s_lips = lip_series(src) if (not KEYS or "lips" in KEYS) else None
+    s_expr = expr_series(src) if "expr" in KEYS else None
+    s_cam = _bg_flows(list(src), mask) if "cam" in KEYS else None
     r_char = dino_embed([ref_crop(ref)])[0] if "char" in KEYS else None
-    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "copy": [], "char": [], "wpose": [], "layout": []}
+    r_cloth = s_cloth = None
+    if "cloth" in KEYS:
+        r_cloth = cloth_feature([cloth_region(ref, ref_mask(ref))])
+        s_cloth = cloth_feature([cloth_region(src[i], src_m[j]) for j, i in enumerate(pick)])
+        rs_cloth = cloth_sim(r_cloth, s_cloth) or 0.0    # how alike the two outfits are to begin with
+    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "copy": [], "char": [], "wpose": [], "layout": [], "expr": [],
+           "cam": [], "cloth": []}
     for g in range(G):
         e = [x for x in (face_embed(gen[g, i]) for i in pick) if x is not None]
         if r_emb is None:
@@ -416,15 +596,26 @@ def rewards_source(gen, src, mask, ref, n_frames=6):
             out["copy"].append(to_src)
         gm = np.stack([person_mask(gen[g, i]) for i in pick])
         out["char"].append(char_reward(gen[g, pick], [a | b for a, b in zip(src_m, gm)], r_char) if r_char is not None else None)
+        if r_cloth is not None:
+            g_cloth = cloth_feature([cloth_region(gen[g, i], gm[j]) for j, i in enumerate(pick)])
+            to_ref, to_src = cloth_sim(g_cloth, r_cloth), cloth_sim(g_cloth, s_cloth)
+            out["cloth"].append(0.0 if to_ref is None else to_ref - 0.5 * max(0.0, (to_src or 0.0) - rs_cloth))
+        else:
+            out["cloth"].append(None)
         union = np.stack([cv2.dilate((a | b).astype(np.uint8), np.ones((k, k), np.uint8)) for a, b in zip(src_m, gm)]) > 0
         bgm = ~union
         diff = (gen[g, pick].astype(np.float32) - src[pick].astype(np.float32)) ** 2
         mse = float(diff[bgm].mean()) if bgm.any() else None
         out["bg"].append(None if mse is None else min(50.0, 10 * np.log10(255.0 ** 2 / max(mse, 1e-6))) / 40.0)
-        sims = [x for x in (oks(s_kp[j], keypoints(gen[g, i])) for j, i in enumerate(pick)) if x is not None]
-        out["pose"].append(float(np.mean(sims)) if sims else (0.0 if any(x is not None for x in s_kp) else None))
+        if "pose" in KEYS:
+            sims = [x for x in (oks(s_kp[j], keypoints(gen[g, i])) for j, i in enumerate(pick)) if x is not None]
+            out["pose"].append(float(np.mean(sims)) if sims else (0.0 if any(x is not None for x in s_kp) else None))
+        else:
+            out["pose"].append(None)
         out["light"].append(light_vs_source(gen[g, pick], src[pick]))
         out["lips"].append(lips_reward(s_lips, gen[g]) if s_lips is not None else None)
+        out["expr"].append(expr_reward(s_expr, gen[g]) if s_expr is not None else None)
+        out["cam"].append(cam_reward(s_cam, list(gen[g]), mask) if s_cam is not None else None)
         out["wpose"].append(wpose_score(s_wb, wholebody([gen[g, i] for i in pick])) if s_wb is not None else None)
         out["layout"].append(layout_score(s_lay, [gen[g, i] for i in pick]) if s_lay is not None else None)
         if out["copy"][-1] is not None and out["copy"][-1] > 0.45:
@@ -434,6 +625,11 @@ def rewards_source(gen, src, mask, ref, n_frames=6):
             out["lips"][-1] = None if out["lips"][-1] is None else -1.0
             out["char"][-1] = None if out["char"][-1] is None else -1.0
             out["wpose"][-1] = None if out["wpose"][-1] is None else 0.0
+            out["expr"][-1] = None if out["expr"][-1] is None else -1.0   # a copy has the guide's expression for free
+            out["cam"][-1] = None if out["cam"][-1] is None else 0.0      # and the guide's camera too
+            if os.environ.get("BFS_COPY_FLOOR_LAYOUT") == "1":     # opt-in (train.bfs_nft.copy_floor_layout)
+                out["layout"][-1] = None if out["layout"][-1] is None else 0.0  # a copy sits exactly where the original was
+                out["cloth"][-1] = None if out["cloth"][-1] is None else min(out["cloth"][-1], 0.0)
     return out
 
 
@@ -471,11 +667,57 @@ def face_embed(frame_rgb):
     return e / (np.linalg.norm(e) + 1e-8)
 
 
+def _face_identity_score(target_rgb, generated_rgb):
+    """ArcFace similarity for every target face, position-matched to the generated frame.
+
+    Matching by frame location keeps two-person swaps tied to their target positions, so exchanging
+    the two identities does not receive the same reward as the correct color-to-reference mapping.
+    Missing generated faces contribute zero; extra detections are ignored.
+    """
+    target_faces = [f for f in faces(target_rgb) if getattr(f, "normed_embedding", None) is not None]
+    generated_faces = [f for f in faces(generated_rgb) if getattr(f, "normed_embedding", None) is not None]
+    if not target_faces:
+        return None
+    # Keep the likely subjects and bound the small assignment search if a frame has many detections.
+    area = lambda f: max(0.0, float(f.bbox[2] - f.bbox[0])) * max(0.0, float(f.bbox[3] - f.bbox[1]))
+    target_faces = sorted(target_faces, key=area, reverse=True)[:4]
+    generated_faces = sorted(generated_faces, key=area, reverse=True)[:4]
+    if not generated_faces:
+        return 0.0
+
+    from itertools import combinations, permutations
+
+    h, w = target_rgb.shape[:2]
+    def center(f):
+        b = f.bbox
+        return ((float(b[0] + b[2]) / (2 * w)), (float(b[1] + b[3]) / (2 * h)))
+
+    n_match = min(len(target_faces), len(generated_faces))
+    best_cost = float("inf")
+    best_pairs = None
+    # Select target/generated subsets of equal size, then choose the closest positional assignment.
+    for target_ids in combinations(range(len(target_faces)), n_match):
+        for generated_ids in permutations(range(len(generated_faces)), n_match):
+            pairs = list(zip(target_ids, generated_ids))
+            cost = 0.0
+            for ti, gi in pairs:
+                tx, ty = center(target_faces[ti])
+                gx, gy = center(generated_faces[gi])
+                cost += (tx - gx) ** 2 + (ty - gy) ** 2
+            if cost < best_cost:
+                best_cost, best_pairs = cost, pairs
+
+    scores = [
+        float(target_faces[ti].normed_embedding @ generated_faces[gi].normed_embedding)
+        for ti, gi in (best_pairs or [])
+    ]
+    return float(sum(scores) / len(target_faces))
+
+
 def rewards(gen, tgt, mask, n_frames=10):
     G, F = gen.shape[:2]
     pick = np.unique(np.linspace(0, F - 1, min(n_frames, F)).round().astype(int))
-    t_emb = [e for e in (face_embed(tgt[i]) for i in pick) if e is not None]
-    t_emb = np.mean(t_emb, 0) if t_emb else None
+    target_face_count = sum(bool(faces(tgt[i])) for i in pick)
     H, W = tgt.shape[1:3]
     k = max(3, int(min(H, W) * 0.04) | 1)
     if mask is not None:
@@ -483,19 +725,26 @@ def rewards(gen, tgt, mask, n_frames=10):
         grown = np.stack([cv2.dilate(x.astype(np.uint8), np.ones((k, k), np.uint8)) for x in m]) > 0
     blur = max(3, int(min(H, W) / 12) | 1)
     t_lab = np.stack([cv2.cvtColor(cv2.GaussianBlur(tgt[i], (blur, blur), 0), cv2.COLOR_RGB2LAB) for i in pick]).astype(np.float32)
-    t_kp = [keypoints(tgt[i]) for i in pick]
+    t_kp = [keypoints(tgt[i]) for i in pick] if "pose" in KEYS else []
     t_wb = wholebody([tgt[i] for i in pick]) if "wpose" in KEYS else None
     t_lay = [subject_mask(tgt[i]) for i in pick] if "layout" in KEYS else None
     t_lips = lip_series(tgt) if (not KEYS or "lips" in KEYS) else None
+    t_expr = expr_series(tgt) if "expr" in KEYS else None
+    t_cam = _bg_flows(list(tgt), mask) if "cam" in KEYS else None
     t_char = None
     if "char" in KEYS:
         tm = m[pick] if mask is not None else [None] * len(pick)
         t_char = dino_embed([subject_crop(tgt[i], x) for i, x in zip(pick, tm)])
         t_char = t_char.mean(0) / (np.linalg.norm(t_char.mean(0)) + 1e-8)
-    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "char": [], "wpose": [], "layout": []}
+    t_cloth = None
+    if "cloth" in KEYS:
+        t_cloth = cloth_feature([cloth_region(tgt[i], m[i] if mask is not None else None) for i in pick])
+    out = {"id": [], "bg": [], "light": [], "pose": [], "lips": [], "char": [], "wpose": [], "layout": [], "expr": [], "cam": [],
+           "cloth": []}
     for g in range(G):
-        e = [x for x in (face_embed(gen[g, i]) for i in pick) if x is not None]
-        out["id"].append(float(np.median([x @ t_emb for x in e])) if (e and t_emb is not None) else (0.0 if t_emb is not None else None))
+        id_scores = [_face_identity_score(tgt[i], gen[g, i]) for i in pick]
+        id_scores = [score for score in id_scores if score is not None]
+        out["id"].append(float(np.mean(id_scores)) if id_scores else (0.0 if target_face_count else None))
         if mask is not None:
             bgm = ~grown
             diff = (gen[g].astype(np.float32) - tgt.astype(np.float32)) ** 2
@@ -506,14 +755,24 @@ def rewards(gen, tgt, mask, n_frames=10):
             out["bg"].append(None)
             sel = np.ones((len(pick), H, W), bool)
         g_lab = np.stack([cv2.cvtColor(cv2.GaussianBlur(gen[g, i], (blur, blur), 0), cv2.COLOR_RGB2LAB) for i in pick]).astype(np.float32)
-        sims = [x for x in (oks(t_kp[j], keypoints(gen[g, i])) for j, i in enumerate(pick)) if x is not None]
-        out["pose"].append(float(np.mean(sims)) if sims else (0.0 if any(k is not None for k in t_kp) else None))
+        if "pose" in KEYS:
+            sims = [x for x in (oks(t_kp[j], keypoints(gen[g, i])) for j, i in enumerate(pick)) if x is not None]
+            out["pose"].append(float(np.mean(sims)) if sims else (0.0 if any(k is not None for k in t_kp) else None))
+        else:
+            out["pose"].append(None)
         out["light"].append(-float(np.abs(g_lab - t_lab)[sel].mean()) / 20.0 if sel.any() else None)
         out["lips"].append(lips_reward(t_lips, gen[g]) if t_lips is not None else None)
+        out["expr"].append(expr_reward(t_expr, gen[g]) if t_expr is not None else None)
+        out["cam"].append(cam_reward(t_cam, list(gen[g]), mask) if t_cam is not None else None)
         out["wpose"].append(wpose_score(t_wb, wholebody([gen[g, i] for i in pick])) if t_wb is not None else None)
         out["layout"].append(layout_score(t_lay, [gen[g, i] for i in pick]) if t_lay is not None else None)
         out["char"].append(char_reward(gen[g, pick], list(m[pick]) if mask is not None else [None] * len(pick), t_char)
                            if t_char is not None else None)
+        if t_cloth is not None:
+            c = cloth_sim(cloth_feature([cloth_region(gen[g, i]) for i in pick]), t_cloth)
+            out["cloth"].append(0.0 if c is None else c)
+        else:
+            out["cloth"].append(None)
     return out
 
 
@@ -521,11 +780,16 @@ def main():
     global FA, POSE, SEG, FL, DEV
     import torch
     DEV = "cuda" if torch.cuda.is_available() else "cpu"
-    FA = _arcface()
-    FL = _landmarks()
-    from ultralytics import YOLO
-    POSE = YOLO(MODELS["pose"])
-    SEG = YOLO(MODELS["seg"])
+    if "id" in KEYS:
+        FA = _arcface()
+    if KEYS & {"lips", "expr"}:
+        FL = _landmarks()
+    if KEYS & {"pose", "wpose"}:
+        from ultralytics import YOLO
+        POSE = YOLO(MODELS["pose"])
+    if KEYS & {"layout", "char", "cloth"}:
+        from ultralytics import YOLO
+        SEG = YOLO(MODELS["seg"])
     print(json.dumps({"ready": True}), flush=True)
     for line in sys.stdin:
         line = line.strip()

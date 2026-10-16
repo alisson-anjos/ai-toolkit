@@ -400,7 +400,16 @@ class SDTrainer(BaseSDTrainProcess):
                 print_acc("")
 
                 # unload the text encoder
-                if self.is_caching_text_embeddings:
+                _nft = getattr(self.train_config, "bfs_nft", None) or {}
+                pool = _nft.get("ref_pool")
+                if not pool and any(k != "guide" and float(v) > 0 for k, v in (_nft.get("guide_modes") or {}).items()):
+                    pool = {"te_on_gpu": True}   # native / both modes re-encode the prompt with <Video 1> every step
+                if pool:
+                    # RL ref_pool re-encodes every step's prompt with a new reference picture: keep the real encoder
+                    keep = self.device_torch if pool.get("te_on_gpu", True) else "cpu"
+                    print_acc(f"bfs_nft.ref_pool: keeping the text encoder on {keep} (prompts are re-encoded per step)")
+                    self.sd.text_encoder_to(keep)
+                elif self.is_caching_text_embeddings:
                     unload_text_encoder(self.sd)
                 else:
                     # todo once every model is tested to work, unload properly. Though, this will all be merged into one thing.

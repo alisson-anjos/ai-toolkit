@@ -1,2 +1,5 @@
 -r requirements_base.txt
 scipy==1.12.0
+# Optional BFS NFT ArcFace reward worker (CPU inference)
+insightface==2.1
+onnxruntime==1.23.2

@@ -1405,6 +1405,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 # latents = mean_zero_latents / mean_zero_latents.std()
 
                 noisy_latents = self.sd.add_noise(latents, noise, timesteps)
+                batch.aux_timesteps = timesteps   # auxiliary video losses need the noise level whatever the loss target
 
                 # determine scaled noise
                 # todo do we need to scale this or does it always predict full intensity
