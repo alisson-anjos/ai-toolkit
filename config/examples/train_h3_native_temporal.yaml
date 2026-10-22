@@ -176,11 +176,11 @@ config:
         sample_steps: 28
         width: 672
         height: 384
-        ctrl_img_1: /path/to/preview/00b5c4d3-acd1-4438-95ad-0a0e9a706825.mp4
+        ctrl_img_1: /path/to/preview/guide.mp4
         ctrl_role_1: reference
-        ctrl_img_2: /path/to/preview/00b5c4d3-acd1-4438-95ad-0a0e9a706825.webp
+        ctrl_img_2: /path/to/preview/identity_1.png
         ctrl_role_2: reference
-        ctrl_img_3: /path/to/preview/00b5c4d3-acd1-4438-95ad-0a0e9a706825.webp
+        ctrl_img_3: /path/to/preview/identity_2.png
         ctrl_role_3: reference
     name: openjutsu_h3_native_temporal_v1
     meta:

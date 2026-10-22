@@ -52,3 +52,8 @@ python -m pytest -q tests/test_minimax_h3_aligned_refs.py tests/test_minimax_h3_
 ```
 
 The preceding prerequisite commit includes reference aspect preservation, source-aware packing, synchronized video-reference cache sampling, LoRA loader compatibility and associated regression tests. Dataset media, generated caches, credentials, checkpoints, optimizers and machine runtime state are intentionally not part of this source branch.
+
+
+## ComfyUI consumer
+
+The corresponding BFSNodes implementation is published separately on [`feat/h3-native-temporal`](https://github.com/alisson-anjos/ComfyUI-BFSNodes/tree/feat/h3-native-temporal). It provides a standalone MODEL patch node and a native-temporal option in Shot H3 Conditioning, with the same policy defaults. See [BFS inference instructions](https://github.com/alisson-anjos/ComfyUI-BFSNodes/blob/feat/h3-native-temporal/H3_NATIVE_TEMPORAL.md). This is an experimental consumer with CPU parity/routing coverage; full ComfyUI GPU generation remains pending local validation.
