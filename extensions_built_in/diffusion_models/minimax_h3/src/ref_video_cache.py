@@ -202,8 +202,9 @@ def load_ref_video_latent(
     crop_signature = spatial_signature(file_item) if align else None
     if keep_aspect and crop_signature is not None:
         crop_signature = crop_signature[-2:]  # the whole frame is kept: only the flips matter
-    target_indices = getattr(file_item, "video_frame_indices", None) if align else None
-    target_fps = getattr(file_item, "video_source_fps", None) if align else None
+    temporal_align = align or bool(getattr(model, "native_temporal_options", {}).get("enabled", False))
+    target_indices = getattr(file_item, "video_frame_indices", None) if temporal_align else None
+    target_fps = getattr(file_item, "video_source_fps", None) if temporal_align else None
     temporal_signature = (getattr(dataset_config, "num_frames", None), dataset_config.fps,
                           dataset_config.auto_frame_count, dataset_config.trim_auto_frame_count_tail,
                           getattr(dataset_config, "max_auto_frame_seconds", None),
@@ -281,11 +282,11 @@ def load_ref_video_latent(
     indices = ref_frame_indices(
         total, src_fps, num_frames, dataset_config.fps, trim_tail
     )
-    if align and target_indices:
+    if temporal_align and target_indices:
         rate = src_fps / target_fps if target_fps and target_fps > 0 else 1.0
         indices = [min(round(i * rate), total - 1) for i in target_indices]
         num_frames = len(indices)
-    elif align and not trim_tail and not getattr(dataset_config, "shrink_video_to_frames", True):
+    elif temporal_align and not trim_tail and not getattr(dataset_config, "shrink_video_to_frames", True):
         raise ValueError("Aligned guides need target frame indices for random video windows; use shrink_video_to_frames or cache target frame indices")
     try:
         raw_frames = read_frames_at(cap, indices)

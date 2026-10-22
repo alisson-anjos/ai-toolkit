@@ -1,3 +1,4 @@
+from toolkit import h3_native_temporal as native_temporal
 """MiniMax-H3 sampling pipeline for ai-toolkit training previews.
 
 Covers t2v (t2va) and first-frame i2v (fl2va), always denoising the joint
@@ -146,6 +147,8 @@ class MiniMaxH3Pipeline:
             ref_source_ids=tuple(kwargs.get('ref_source_ids', ())),
             **options_from_kwargs(model.model_config.model_kwargs),
         )
+        motion_mask = native_temporal.align_layout(layout, ref_blocks,
+            tuple(kwargs.get('ref_source_ids', ())), model.native_temporal_options)
         num_cond = layout.num_condition_video_rows
 
         # --- conditioning rows (draw order: condition noise, video, audio) --
@@ -250,6 +253,8 @@ class MiniMaxH3Pipeline:
                 token_tags=tags,
                 position_ids=position_ids,
                 source_phase_values=layout.source_phase_values[None].to(device) if layout.source_phase_values is not None else None,
+                native_motion_mask=motion_mask[None].to(device) if model.native_temporal_options['enabled'] else None,
+                native_temporal_options=model.native_temporal_options,
                 video_indices=video_indices,
                 audio_indices=audio_indices,
                 text_indices=text_indices,

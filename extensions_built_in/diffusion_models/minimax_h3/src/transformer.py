@@ -36,6 +36,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from toolkit.h3_reference_rope import add_source_phase
+from toolkit import h3_native_temporal as native_temporal
 from torch.utils.checkpoint import checkpoint
 
 MODALITY_NUM = 3  # 0 = video, 1 = text, 2 = audio; -1 marks padding rows
@@ -200,7 +201,10 @@ class MiniMaxH3Attention(nn.Module):
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        if isinstance(attn_mask, native_temporal.TemporalContext):
+            out = native_temporal.attention(q, k, v, attn_mask)
+        else:
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         out = out.transpose(1, 2).reshape(b, s, -1)
         return self.out_proj(out)
 
@@ -507,6 +511,8 @@ class MiniMaxH3Transformer(nn.Module, OstrisModelMixin):
             Tuple[int, int, int]
         ] = None,  # target-video token grid (t, h, w)
         source_phase_values: Optional[torch.Tensor] = None,
+        native_motion_mask: Optional[torch.Tensor] = None,
+        native_temporal_options=None,
     ):
         """Returns (video_out (B, Nv, 96), audio_out (B, Na, 32)) — the
         data-ward velocity ``clean - noise`` for every row, in input order.
@@ -569,6 +575,12 @@ class MiniMaxH3Transformer(nn.Module, OstrisModelMixin):
                     device=x.device,
                 )
             )
+
+        temporal_ctx = native_temporal.context(position_ids, native_motion_mask, token_tags,
+            video_indices, vsa_video_grid, native_temporal_options or {'enabled': False})
+        if temporal_ctx is not None:
+            if vsa_ctx is not None:raise ValueError('Native temporal bias cannot bypass a trained VSA policy')
+            attn_mask = temporal_ctx
 
         for block in self.blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:

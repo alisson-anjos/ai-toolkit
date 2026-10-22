@@ -46,6 +46,7 @@ from PIL import Image
 from safetensors.torch import load_file, save_file
 
 from toolkit.h3_reference_rope import options_from_kwargs, PHASE_VERSION
+from toolkit import h3_native_temporal as native_temporal
 from toolkit.accelerator import unwrap_model
 from toolkit.advanced_prompt_embeds import AdvancedPromptEmbeds
 from toolkit.basic import flush
@@ -216,6 +217,7 @@ class MinimaxH3Model(BaseModel):
         self._ref_video_dataset_config = None
         self._sample_ref_max_frames = None
         self.latent_space_version = "minimax_h3_v1"
+        self.native_temporal_options = native_temporal.options(self.model_config.model_kwargs)
         rope_options = options_from_kwargs(self.model_config.model_kwargs)
         experimental_rope = (rope_options['reference_source_phase'] or rope_options['guide_rope_layout'] != 'overlap' or rope_options['reference_rope_layout'] != 'native'
                              or rope_options['guide_keep_aspect'])
@@ -1028,10 +1030,20 @@ class MinimaxH3Model(BaseModel):
                         ref_blocks=ref_blocks,
                         aligned_refs=aligned_refs,
                         reference_downscale_factor=self._reference_downscale_factor(),
-                        ref_source_ids=tuple(block[5] for block in ref_blocks) if self.model_config.model_kwargs.get('reference_source_phase', False) else (),
+                        ref_source_ids=tuple(block[5] for block in ref_blocks) if (self.model_config.model_kwargs.get('reference_source_phase', False) or self.native_temporal_options['enabled']) else (),
                         **options_from_kwargs(self.model_config.model_kwargs),
                     )
                 )
+            motion_masks = [native_temporal.align_layout(layout, ref_blocks,
+                tuple(block[5] for block in ref_blocks) if self.native_temporal_options['enabled'] else (),
+                self.native_temporal_options) for layout in layouts]
+            if self.native_temporal_options['enabled'] and not getattr(self, '_native_temporal_logged', False):
+                print(f"[H3 native temporal] {native_temporal.VERSION}: native video reference retained; "
+                      f"AddGuide alignment OFF; motion channel={self.native_temporal_options['source_channel']}; "
+                      f"source_rows={int(motion_masks[0].sum())}; image references remain native; "
+                      f"soft attention window={self.native_temporal_options['window']}s, "
+                      f"strength={self.native_temporal_options['strength']}, cap={self.native_temporal_options['cap']}", flush=True)
+                self._native_temporal_logged = True
             (
                 position_ids,
                 token_tags,
@@ -1082,6 +1094,8 @@ class MinimaxH3Model(BaseModel):
             token_tags=token_tags.to(device),
             position_ids=position_ids.to(device),
             source_phase_values=packing.pad_source_phases(layouts).to(device) if any(l.source_phase_values is not None for l in layouts) else None,
+            native_motion_mask=native_temporal.pad_motion_masks(layouts, motion_masks).to(device) if self.native_temporal_options['enabled'] else None,
+            native_temporal_options=self.native_temporal_options,
             video_indices=video_indices.to(device),
             audio_indices=audio_indices.to(device),
             text_indices=text_indices.to(device),
@@ -1404,6 +1418,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
     def get_additional_save_metadata(self):
         """LoRA consumers must reproduce the guide geometry used in training."""
         return {
+            "native_temporal_alignment": {"version": native_temporal.VERSION, **self.native_temporal_options},
             "reference_downscale_factor": self._reference_downscale_factor(),
             "align_video_refs": bool(self.model_config.model_kwargs.get("align_video_refs", False)),
             "align_image_refs": bool(self.model_config.model_kwargs.get("align_image_refs", False)),
@@ -1560,7 +1575,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                 if aligned_image else
                 (ref_latents.shape[2], ref_latents.shape[3], ref_latents.shape[4], 0, False)
             )
-            if self.model_config.model_kwargs.get('reference_source_phase', False):
+            if self.model_config.model_kwargs.get('reference_source_phase', False) or self.native_temporal_options['enabled']:
                 source_ids = batch.file_items[0].control_image_source_ids
                 if any(item.control_image_source_ids != source_ids for item in batch.file_items):
                     raise ValueError('Control source channels must match across the batch')
@@ -1775,7 +1790,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                     self, per_item[ref_idx], batch.dataset_config, target_h, target_w,
                     align=align,
                     reference_downscale_factor=self._reference_downscale_factor() if align else 1,
-                    file_item=batch.file_items[item_idx] if align else None,
+                    file_item=batch.file_items[item_idx] if (align or self.native_temporal_options['enabled']) else None,
                     keep_aspect=bool(align and self._guide_keep_aspect()),
                 )
                 lats.append(entry["latent"].to(device, torch.float32))
@@ -1813,7 +1828,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                     align,
                 )
             )
-            if self.model_config.model_kwargs.get('reference_source_phase', False):
+            if self.model_config.model_kwargs.get('reference_source_phase', False) or self.native_temporal_options['enabled']:
                 source_ids = batch.file_items[0].control_video_source_ids
                 if any(item.control_video_source_ids != source_ids for item in batch.file_items):
                     raise ValueError('Control source channels must match across the batch')

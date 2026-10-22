@@ -1,0 +1,198 @@
+job: extension
+config:
+  name: openjutsu_h3_native_temporal_v1
+  process:
+  - type: diffusion_trainer
+    training_folder: output
+    sqlite_db_path: ./aitk_db.db
+    device: cuda
+    performance_log_every: 10
+    trigger_word: null
+    network:
+      type: lora
+      linear: 64
+      linear_alpha: 64
+      pretrained_lora_path: null
+      network_kwargs:
+        ignore_if_contains:
+        - adaln_proj
+    save:
+      dtype: bf16
+      save_every: 250
+      max_step_saves_to_keep: 3
+      save_format: diffusers
+      push_to_hub: false
+    datasets:
+    - caption_ext: txt
+      caption_dropout_rate: 0.0
+      cache_text_embeddings: true
+      cache_latents_to_disk: true
+      resolution:
+      - 384
+      auto_frame_count: false
+      max_auto_frame_seconds: 4.458333333333333
+      shrink_video_to_frames: false
+      do_audio: false
+      flip_x: false
+      flip_y: false
+      random_crop: false
+      num_repeats: 1
+      network_weight: 1
+      is_reg: false
+      folder_path: /path/to/dataset/targets
+      num_frames: 107
+      fps: 24
+      control_path:
+      - /path/to/dataset/guides
+      - /path/to/dataset/refs_1
+      - /path/to/dataset/refs_2
+      trim_auto_frame_count_tail: true
+      control_role_1: reference
+      control_role_2: reference
+      control_role_3: reference
+    train:
+      batch_size: 1
+      steps: 3000
+      gradient_accumulation: 1
+      train_unet: true
+      train_text_encoder: false
+      gradient_checkpointing: true
+      noise_scheduler: flowmatch
+      optimizer: adamw
+      lr: 0.0001
+      optimizer_params:
+        weight_decay: 0.0001
+      timestep_type: shift
+      content_or_style: balanced
+      cache_text_embeddings: true
+      unload_text_encoder: false
+      dtype: bf16
+      loss_type: mse
+      do_guidance_loss: true
+      guidance_loss_target: 3.5
+      audio_loss_multiplier: 1
+      skip_first_sample: true
+      force_first_sample: false
+      disable_sampling: false
+      ema_config:
+        use_ema: false
+        ema_decay: 0.99
+      start_step: 0
+    logging:
+      log_every: 1
+      use_ui_logger: true
+    model:
+      name_or_path: /path/to/minimax-h3
+      arch: minimax_h3_ref2va
+      quantize: true
+      qtype: convrot8
+      quantize_te: true
+      qtype_te: convrot8
+      low_vram: false
+      compile: false
+      layer_offloading: false
+      assistant_lora_path: /path/to/minimax_h3_ref2va_training_adapter_v2.safetensors
+      model_kwargs:
+        partition: ref2va_pruned
+        align_video_refs: false
+        align_image_refs: false
+        guide_latent_only: false
+        control_latent_only: false
+        reference_downscale_factor: 1
+        dit_ref2va_pruned_path: /path/to/minimax-h3/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors
+        text_encoder_path: /path/to/minimax-h3/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors
+        video_vae_path: /path/to/minimax-h3/video_vae_fp16.safetensors
+        audio_vae_path: /path/to/minimax-h3/audio_vae_fp32.safetensors
+        sample_audio: false
+        guide_rope_layout: overlap
+        reference_rope_layout: native
+        reference_source_phase: false
+        auxiliary_losses: []
+        auxiliary_loss_max_sigma: 0.75
+        auxiliary_loss_latent_frames: 2
+        auxiliary_loss_sample_frames: 2
+        guide_keep_aspect: false
+        native_temporal_alignment: true
+        native_motion_source_channel: 1
+        native_temporal_strength: 2.0
+        native_temporal_window_seconds: 0.2
+        native_temporal_falloff_seconds: 0.25
+        native_temporal_max_penalty: 6.0
+    sample:
+      sampler: flowmatch
+      sample_every: 250
+      sample_start_step: 500
+      width: 672
+      height: 384
+      neg: ''
+      seed: 42
+      walk_seed: false
+      guidance_scale: 1
+      sample_steps: 28
+      num_frames: 107
+      fps: 24
+      samples:
+      - prompt: "motion_transfer: subject_definitions: <Subject 1> is a bald man with\
+          \ a dark mustache and a navy blue crewneck sweatshirt with small white chest\
+          \ lettering, whose visible identity and appearance come from <Picture 1>.\
+          \ <Subject 1> follows the motion and performance of the short blond-haired\
+          \ man wearing a yellow T-shirt and purple trousers, initially nearer the\
+          \ camera in <Video 1>. <Subject 2> is a man with short dark hair, rectangular\
+          \ glasses and a light-colored collared shirt, whose visible identity and\
+          \ appearance come from <Picture 2>. <Subject 2> follows the motion and performance\
+          \ of the orange-haired man wearing a white T-shirt over burgundy long sleeves\
+          \ and blue jeans in <Video 1>. <Video 1> is the source motion and performance\
+          \ guide. It supplies the assigned performers\u2019 actions and timing, while\
+          \ the described target setting and reference appearances define the output.\
+          \  summary: [reference generation] Generate a character motion-transfer\
+          \ video. <Subject 1> follows the short blond-haired man wearing a yellow\
+          \ T-shirt and purple trousers, initially nearer the camera; <Subject 2>\
+          \ follows the orange-haired man wearing a white T-shirt over burgundy long\
+          \ sleeves and blue jeans. Use the specified reference appearances in the\
+          \ described target scene.  retention_analysis: <Subject 1> (throughout its\
+          \ corresponding performance): fully_preserved - retain the defined appearance\
+          \ from <Picture 1>; the reference-image pose does not fix the animation.\
+          \ <Subject 2> (throughout its corresponding performance): fully_preserved\
+          \ - retain the defined appearance from <Picture 2>; the reference-image\
+          \ pose does not fix the animation. <Video 1> (corresponding performers):\
+          \ attribute_transfer - transfer movement, gesture timing, posture changes,\
+          \ head motion, gaze and visible expressions to their assigned reference\
+          \ characters.  detailed_description: An urban rooftop with red and dark\
+          \ flooring, wooden benches, railings and commercial city buildings behind\
+          \ it under diffuse daylight. Follow the guide framing, camera progression\
+          \ and cut timing. [Shot 1] <Subject 1> and <Subject 2> exchange strikes\
+          \ and grapple. <Subject 1> briefly drops onto his hands and knees, rises\
+          \ and continues the exchange. At the final observed moment <Subject 2> lies\
+          \ on the rooftop while <Subject 1> stands farther away. Follow each assigned\
+          \ source performer through the movement. Maintain each character-to-performer\
+          \ assignment through position changes, occlusions and any source cuts. Keep\
+          \ distinct identities and their referenced clothing separate. Follow the\
+          \ source action sequence and timing rather than a still reference pose.\
+          \  overall_soundscape: N/A  non_diegetic_music: N/A"
+        num_frames: 107
+        fps: 24
+        seed: 42
+        guidance_scale: 1
+        sample_steps: 28
+        width: 672
+        height: 384
+        ctrl_img_1: /path/to/preview/00b5c4d3-acd1-4438-95ad-0a0e9a706825.mp4
+        ctrl_role_1: reference
+        ctrl_img_2: /path/to/preview/00b5c4d3-acd1-4438-95ad-0a0e9a706825.webp
+        ctrl_role_2: reference
+        ctrl_img_3: /path/to/preview/00b5c4d3-acd1-4438-95ad-0a0e9a706825.webp
+        ctrl_role_3: reference
+    name: openjutsu_h3_native_temporal_v1
+    meta:
+      name: openjutsu_h3_native_temporal_v1
+  meta:
+    name: openjutsu_h3_native_temporal_v1
+    version: '1.0'
+meta:
+  name: openjutsu_h3_native_temporal_v1
+  version: '1.0'
+  native_temporal_version: native_temporal_v1
+  native_motion_source_channel: 1
+  native_temporal_attention: soft_bounded_target_to_motion_flex
+  native_temporal_requires_custom_inference: true
+  fresh_lora: true
