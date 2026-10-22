@@ -325,6 +325,7 @@ def build_packed_sequence(
     reference_phase_scale: float = 1.0,
     reference_sidecar_margin: float = 0.0,
     ref_source_ids: Tuple[int, ...] = (),
+    guide_keep_aspect: bool = False,
 ) -> PackedLayout:
     """Build the [text | conditions | target audio | target video] layout.
 
@@ -352,10 +353,17 @@ def build_packed_sequence(
     and width divided by ``reference_downscale_factor``. Their positions sample
     the target grid at that stride (H3 already normalizes spatial coordinates).
     Their frame count may be shorter, aligning from the target's first frame.
+
+    ``guide_keep_aspect``: an aligned block keeps its OWN size and aspect (a
+    landscape guide for a portrait target) on its own aspect-normalized grid,
+    centred on the target's like every H3 grid, while staying on the target's
+    clock. Where the aspects agree the grid is exactly the target-stride one
+    above; where they differ the two frames overlap in a centred cross.
     """
     validate_options(guide_rope_layout, reference_rope_layout, reference_source_phase,
-                     reference_phase_scale, reference_sidecar_margin)
-    if keyframe_anchors and (reference_source_phase or guide_rope_layout != 'overlap' or reference_rope_layout != 'native'):
+                     reference_phase_scale, reference_sidecar_margin, guide_keep_aspect)
+    if keyframe_anchors and (reference_source_phase or guide_rope_layout != 'overlap' or reference_rope_layout != 'native'
+                             or guide_keep_aspect):
         raise ValueError('Experimental reference RoPE options require ref2va blocks')
     if ref_source_ids and (len(ref_source_ids) != len(ref_blocks) or any(isinstance(x,bool) or not isinstance(x,int) or x<1 for x in ref_source_ids)):
         raise ValueError('ref_source_ids must contain one positive integer per reference')
@@ -375,7 +383,10 @@ def build_packed_sequence(
             f"aligned_refs has {len(aligned_refs)} entries for {len(ref_blocks)} ref blocks"
         )
     for (_, b_h, b_w, _), aligned in zip(ref_blocks, aligned_flags):
-        if aligned and (
+        if aligned and guide_keep_aspect:
+            if b_h <= 0 or b_w <= 0 or b_h % ph or b_w % pw:
+                raise ValueError(f"an aligned guide must sit on the patch grid; got {b_h}x{b_w}")
+        elif aligned and (
             b_h * factor != latent_height or b_w * factor != latent_width
             or b_h <= 0 or b_w <= 0 or b_h % ph or b_w % pw
         ):
@@ -453,7 +464,23 @@ def build_packed_sequence(
         aligned = aligned_flags[i]
         rope_layout = guide_rope_layout if aligned else reference_rope_layout
         block_start = ref_cursor
-        if aligned:
+        if aligned and guide_keep_aspect:
+            # own aspect-normalized grid (centred like the target's), target clock
+            ref_sqrt_area = math.sqrt(ref_h * ref_w)
+            w_grid = _spatial_position_grid(ref_w, pw, ref_sqrt_area)
+            ref_grid = torch.stack(
+                [
+                    g.reshape(-1)
+                    for g in torch.meshgrid(
+                        _spatial_position_grid(ref_h, ph, ref_sqrt_area),
+                        w_grid,
+                        indexing="ij",
+                    )
+                ],
+                dim=-1,
+            )
+            block_clock = media_origin
+        elif aligned:
             # Coarse tokens occupy every factor-th target patch origin. Do NOT
             # multiply H3's already area-normalized coordinates by the factor.
             w_grid = width_grid[::factor]
@@ -482,7 +509,7 @@ def build_packed_sequence(
             # soundtrack rows first: channel-major, shared 40/s clock from the
             # block origin, width pinned to the ref grid's extremes
             a_time = block_clock + torch.arange(ref_a, dtype=torch.float64)
-            audio_width_grid = width_grid if aligned else w_grid
+            audio_width_grid = width_grid if aligned and not guide_keep_aspect else w_grid
             rows = slice(ref_cursor, ref_cursor + ref_aud_rows[i])
             position_ids[rows, 0] = a_time.repeat(AUDIO_CHANNELS)
             position_ids[rows, 2] = torch.cat(

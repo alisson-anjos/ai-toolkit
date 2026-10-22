@@ -139,6 +139,7 @@ def test_sampling_uses_same_guide_size_as_training(clip, monkeypatch):
     class FakeModel:
         model_config = SimpleNamespace(model_kwargs={'align_video_refs': True, 'reference_downscale_factor': 2})
         _reference_downscale_factor = model_method('_reference_downscale_factor')
+        _guide_keep_aspect = model_method('_guide_keep_aspect')
         video_vae = SimpleNamespace(encode=encode, dtype=torch.float32)
         vae = SimpleNamespace(device='cpu')
     method = model_method('_encode_ref_video_for_sampling', 'MinimaxH3Ref2VAModel',
@@ -155,6 +156,7 @@ def test_metadata_round_trip_and_lora_save_hook(tmp_path):
         control_latent_only = True
         guide_latent_only = False
         _reference_downscale_factor = model_method('_reference_downscale_factor')
+        _guide_keep_aspect = model_method('_guide_keep_aspect')
         get_additional_save_metadata = model_method('get_additional_save_metadata', 'MinimaxH3Ref2VAModel')
     model = Model()
     # Exercise the actual pre-serialization section shared by LoRA/full-model saves.
@@ -271,4 +273,5 @@ def test_training_and_sampling_bucket_grid(factor, expected):
     class Model:
         model_config = SimpleNamespace(model_kwargs={'align_video_refs': True, 'reference_downscale_factor': factor})
         _reference_downscale_factor = model_method('_reference_downscale_factor')
+        _guide_keep_aspect = model_method('_guide_keep_aspect')
     assert model_method('get_bucket_divisibility', 'MinimaxH3Ref2VAModel')(Model()) == expected

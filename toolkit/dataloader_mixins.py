@@ -513,6 +513,8 @@ class ImageProcessingDTOMixin:
         # the same answer at bucketing time and at load time.
         # allow for any length video here but make sure it is temporally compressable.
         vid_length_seconds = total_frames / video_fps
+        if self.dataset_config.max_auto_frame_seconds:
+            vid_length_seconds = min(vid_length_seconds, self.dataset_config.max_auto_frame_seconds)
 
         desired_num_frames = int(vid_length_seconds * self.dataset_config.fps)
 
@@ -1162,6 +1164,8 @@ class ControlFileItemDTOMixin:
             if sd is not None and hasattr(sd, 'register_dataset_control_roles'):
                 sd.register_dataset_control_roles(dataset_config)
             self._aligned_image_guide_factor = sd._reference_downscale_factor() if any(self.aligned_image_guide_flags) else None
+            self._aligned_image_guide_keep_aspect = bool(self._aligned_image_guide_factor is not None
+                                                         and hasattr(sd, '_guide_keep_aspect') and sd._guide_keep_aspect())
             if self._aligned_image_guide_factor is not None and not dataset_config.cache_text_embeddings:
                 raise ValueError('Aligned image guides require cache_text_embeddings: true; enable Cache Text Embeddings in the UI')
             self.control_path = found_control_images
@@ -1228,7 +1232,8 @@ class ControlFileItemDTOMixin:
             aligned_guide = (getattr(self, 'aligned_image_guide_flags', []) or [False] * len(control_path_list))[control_index]
             if aligned_guide:
                 from toolkit.aligned_guides import prepare_guide_image
-                img = prepare_guide_image(img, self.crop_height, self.crop_width, self._aligned_image_guide_factor, self)
+                img = prepare_guide_image(img, self.crop_height, self.crop_width, self._aligned_image_guide_factor, self,
+                                          getattr(self, '_aligned_image_guide_keep_aspect', False))
             elif not self.full_size_control_images:
                 # we just scale them to 512x512:
                 w, h = img.size
@@ -1879,6 +1884,8 @@ class LatentCachingFileItemDTOMixin:
                 # changes frame selection; only added when on so caches made before
                 # this option existed stay valid when it is off
                 item["trim_auto_frame_count_tail"] = True
+            if self.dataset_config.max_auto_frame_seconds:
+                item["max_auto_frame_seconds"] = self.dataset_config.max_auto_frame_seconds
             is_video = True
         elif self.is_video and self.dataset_config.num_frames > 1:
             item["num_frames"] = self.dataset_config.num_frames

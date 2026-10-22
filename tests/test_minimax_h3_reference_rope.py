@@ -1,5 +1,6 @@
 import ast
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,7 +9,7 @@ import torch
 from toolkit.h3_reference_rope import add_source_phase, options_from_kwargs
 from minimax_h3_test_utils import ROOT, packing
 
-BFS=ROOT.parent/'ComfyUI-BFSNodes'
+BFS=Path(os.environ.get('BFS_NODES_DIR',ROOT.parent/'ComfyUI-BFSNodes'))
 
 def load(path,name):
     spec=importlib.util.spec_from_file_location(name,path);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
@@ -100,6 +101,7 @@ def test_actual_validation_pipeline_forwards_geometry_and_source_channels():
         max_text_length=512,model_config=SimpleNamespace(model_kwargs=kw),
         _aligned_ref_flags=lambda blocks:tuple(bool(b[4]) for b in blocks),
         _reference_downscale_factor=lambda:4,
+        _guide_keep_aspect=lambda:False,
         decode_latents=lambda z:torch.zeros(1,3,1,128,128))
     ns=dict(torch=torch,np=np,Image=Image,Optional=Optional,packing=packing,
         randn_tensor=randn_tensor,options_from_kwargs=options_from_kwargs,

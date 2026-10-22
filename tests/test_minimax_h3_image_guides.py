@@ -53,6 +53,7 @@ def test_actual_training_builder_image_guide_and_native_identity():
                                        'guide_latent_only': True, 'reference_downscale_factor': 4})
         _reference_dropout_probabilities = lambda self: (0, 0)
         _reference_downscale_factor = lambda self: 4
+        _guide_keep_aspect = lambda self: False
         _image_ref_video_frames = lambda self: 0
         _append_video_ref_blocks = lambda self, *args: None
         def encode_keyframe_latents(self, px):
@@ -157,6 +158,7 @@ def test_sampling_encodes_image_guide_and_preserves_native_reference(tmp_path):
                                        'reference_downscale_factor': 4})
         get_bucket_divisibility = lambda self: 128
         _reference_downscale_factor = lambda self: 4
+        _guide_keep_aspect = lambda self: False
         _image_ref_video_frames = lambda self: 0
         sample_control_is_guide = model_method('sample_control_is_guide', 'MinimaxH3Ref2VAModel', os=os, packing_video_exts=['.mp4'])
         def encode_keyframe_latents(self, pixels):

@@ -17,6 +17,7 @@ aligned_guides = importlib.util.module_from_spec(helper_spec)
 helper_spec.loader.exec_module(aligned_guides)
 prepare_guide_image = aligned_guides.prepare_guide_image
 spatial_signature = aligned_guides.spatial_signature
+keep_aspect_guide_size = aligned_guides.keep_aspect_guide_size
 image_guide_channel = aligned_guides.image_guide_channel
 is_image_guide = aligned_guides.is_image_guide
 MODEL = ROOT / 'extensions_built_in/diffusion_models/minimax_h3/minimax_h3.py'
@@ -41,4 +42,4 @@ def source_function(path, name, namespace, class_name=None):
 def model_method(name, class_name='MinimaxH3Model', **namespace):
     return source_function(MODEL, name, {'options_from_kwargs': options_from_kwargs, 'PHASE_VERSION': PHASE_VERSION, 'packing': packing, 'Image': Image, 'prepare_guide_image': prepare_guide_image,
                                           'spatial_signature': spatial_signature, 'image_guide_channel': image_guide_channel,
-                                          'is_image_guide': is_image_guide, **namespace}, class_name)
+                                          'is_image_guide': is_image_guide, 'keep_aspect_guide_size': keep_aspect_guide_size, **namespace}, class_name)

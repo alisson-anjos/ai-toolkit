@@ -518,23 +518,23 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                         # - full_if_contains: any matching layer, INCLUDING linear/conv, overriding the
                         #   normal lora for it
                         all_layers = self.network_config is not None and getattr(self.network_config, 'all_layers', False)
-                        is_leaf_with_weight = (
-                            len(list(child_module.children())) == 0
-                            and (
-                                isinstance(getattr(child_module, 'weight', None), torch.nn.Parameter)
-                                # OstrisLinear (convrot8/nvfp4/fp8) drops the weight parameter and exposes a
-                                # dequantizing property instead; it still has a full-rank delta to train
-                                or getattr(child_module, 'is_ostris_quantized', False)
-                            )
-                        )
                         matches_full_if_contains = len(self.full_if_contains) > 0 and (
                             any([word in clean_name for word in self.full_if_contains])
                             or any([word in lora_name for word in self.full_if_contains])
                         )
-                        is_full_layer = is_leaf_with_weight and (
-                            matches_full_if_contains
-                            or (all_layers and not is_linear and not is_conv2d)
+                        requires_full_layer = matches_full_if_contains or (
+                            all_layers and not is_linear and not is_conv2d
                         )
+                        # Inspect only requested full-weight candidates. Quantized
+                        # weight properties materialize the full matrix on access.
+                        is_leaf_with_weight = requires_full_layer and (
+                            len(list(child_module.children())) == 0
+                            and (
+                                getattr(child_module, 'is_ostris_quantized', False)
+                                or isinstance(getattr(child_module, 'weight', None), torch.nn.Parameter)
+                            )
+                        )
+                        is_full_layer = is_leaf_with_weight
 
                         skip = False
                         if any([word in clean_name for word in self.ignore_if_contains]):

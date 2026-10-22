@@ -9,25 +9,28 @@ import torch
 PHASE_VERSION = 'h3_source_phase_v1'
 
 
-def validate_options(guide_layout='overlap', reference_layout='native', source_phase=False, phase_scale=1.0, sidecar_margin=0.0):
+def validate_options(guide_layout='overlap', reference_layout='native', source_phase=False, phase_scale=1.0, sidecar_margin=0.0,
+                     guide_keep_aspect=False):
     if guide_layout not in ('overlap', 'sidecar'):
         raise ValueError('guide_rope_layout must be overlap or sidecar')
     if reference_layout not in ('native', 'overlap', 'sidecar'):
         raise ValueError('reference_rope_layout must be native, overlap or sidecar')
     if not isinstance(source_phase, bool):
         raise ValueError('reference_source_phase must be boolean')
+    if not isinstance(guide_keep_aspect, bool):
+        raise ValueError('guide_keep_aspect must be boolean')
     for name, value in [('reference_phase_scale', phase_scale), ('reference_sidecar_margin', sidecar_margin)]:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
             raise ValueError(f'{name} must be finite and nonnegative')
     return dict(guide_rope_layout=guide_layout, reference_rope_layout=reference_layout,
                 reference_source_phase=source_phase, reference_phase_scale=float(phase_scale),
-                reference_sidecar_margin=float(sidecar_margin))
+                reference_sidecar_margin=float(sidecar_margin), guide_keep_aspect=guide_keep_aspect)
 
 
 def options_from_kwargs(kwargs):
     return validate_options(kwargs.get('guide_rope_layout', 'overlap'), kwargs.get('reference_rope_layout', 'native'),
                             kwargs.get('reference_source_phase', False), kwargs.get('reference_phase_scale', 1.0),
-                            kwargs.get('reference_sidecar_margin', 0.0))
+                            kwargs.get('reference_sidecar_margin', 0.0), kwargs.get('guide_keep_aspect', False))
 
 
 def shift_reference(positions, target, layout, margin=0.0):

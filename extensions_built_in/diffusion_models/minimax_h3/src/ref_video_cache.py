@@ -15,7 +15,7 @@ import hashlib
 import json
 import os
 
-from toolkit.aligned_guides import prepare_guide_image, spatial_signature
+from toolkit.aligned_guides import keep_aspect_guide_size, prepare_guide_image, spatial_signature
 from PIL import Image
 
 import cv2
@@ -44,6 +44,11 @@ def ref_frame_indices(total, src_fps, num_frames, dataset_fps, trim_tail):
     ]
 
 
+def capped_seconds(seconds, dataset_config):
+    cap = getattr(dataset_config, "max_auto_frame_seconds", None)
+    return min(seconds, cap) if cap else seconds
+
+
 def ref_video_num_frames(model, path, dataset_config):
     """Dataset-identical frame count for a reference video."""
     cap = cv2.VideoCapture(path)
@@ -51,7 +56,7 @@ def ref_video_num_frames(model, path, dataset_config):
     src_fps = cap.get(cv2.CAP_PROP_FPS) or dataset_config.fps
     cap.release()
     if dataset_config.auto_frame_count:
-        num_frames = int(total / src_fps * dataset_config.fps)
+        num_frames = int(capped_seconds(total / src_fps, dataset_config) * dataset_config.fps)
         snapper = model.get_frame_count_snapper()
         if snapper is not None:
             num_frames = snapper(num_frames)
@@ -174,6 +179,7 @@ def load_ref_video_latent(
     align: bool = False,
     reference_downscale_factor: int = 1,
     file_item=None,
+    keep_aspect: bool = False,
 ) -> dict:
     """Returns {"latent": (C, T, h, w) cpu tensor, "num_frames": int},
     encoding + disk-caching on first use. ``model`` is the MinimaxH3 model
@@ -181,7 +187,9 @@ def load_ref_video_latent(
     factor = validate_reference_downscale_factor(reference_downscale_factor)
     if factor > 1 and not align:
         raise ValueError("reference_downscale_factor > 1 requires an aligned reference")
-    aligned_size = aligned_reference_pixel_size(target_height, target_width, factor) if align else None
+    keep_aspect = bool(keep_aspect and align)
+    aligned_size = (aligned_reference_pixel_size(target_height, target_width, factor)
+                    if align and not keep_aspect else None)
     mem_cache = getattr(model, "_ref_video_cache", None)
     if mem_cache is None:
         mem_cache = {}
@@ -192,13 +200,16 @@ def load_ref_video_latent(
     # Unaligned that passed silently (the guide just sat on a wrong grid, and cost whatever
     # its own size cost); aligned it raises "must share the target's latent resolution".
     crop_signature = spatial_signature(file_item) if align else None
+    if keep_aspect and crop_signature is not None:
+        crop_signature = crop_signature[-2:]  # the whole frame is kept: only the flips matter
     target_indices = getattr(file_item, "video_frame_indices", None) if align else None
     target_fps = getattr(file_item, "video_source_fps", None) if align else None
     temporal_signature = (getattr(dataset_config, "num_frames", None), dataset_config.fps,
                           dataset_config.auto_frame_count, dataset_config.trim_auto_frame_count_tail,
+                          getattr(dataset_config, "max_auto_frame_seconds", None),
                           tuple(target_indices) if target_indices else None, target_fps)
     mem_key = (path, int(target_height), int(target_width), bool(align), factor,
-               crop_signature, temporal_signature)
+               crop_signature, temporal_signature, keep_aspect)
     if mem_key in mem_cache:
         return mem_cache[mem_key]
 
@@ -212,7 +223,7 @@ def load_ref_video_latent(
 
     # dataset-identical frame count
     if dataset_config.auto_frame_count:
-        num_frames = int(total / src_fps * dataset_config.fps)
+        num_frames = int(capped_seconds(total / src_fps, dataset_config) * dataset_config.fps)
         snapper = model.get_frame_count_snapper()
         if snapper is not None:
             num_frames = snapper(num_frames)
@@ -227,7 +238,7 @@ def load_ref_video_latent(
         # an aligned guide is resized to the target's EXACT grid, so the cache key
         # needs the dimensions, not just the area -- two buckets with the same area
         # and different aspects are different tensors here
-        "ref_sizing": "target_crop_v2" if align else "match_target_area",
+        "ref_sizing": ("keep_aspect_v1" if keep_aspect else "target_crop_v2") if align else "match_target_area",
         "crop_signature": crop_signature,
         "target_indices": target_indices,
         "target_fps": target_fps,
@@ -254,7 +265,10 @@ def load_ref_video_latent(
         mem_cache[mem_key] = entry
         return entry
 
-    if align:
+    if keep_aspect:
+        # whole frame, own aspect, target area / factor**2; only the flips follow the target
+        out_h, out_w = keep_aspect_guide_size(src_w, src_h, target_height, target_width, factor)
+    elif align:
         # Encode on the target canvas divided by the factor. The resulting
         # coarse patches span the target's coordinate space at packing time.
         out_h, out_w = aligned_size
@@ -283,7 +297,7 @@ def load_ref_video_latent(
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         if align:
             frame = np.asarray(prepare_guide_image(Image.fromarray(frame), target_height,
-                                                  target_width, factor, file_item))
+                                                  target_width, factor, file_item, keep_aspect))
         else:
             frame = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
         frames.append(frame)

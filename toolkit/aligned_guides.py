@@ -1,4 +1,5 @@
 """Explicit guide roles and shared target/guide spatial transforms."""
+import math
 import os
 from PIL import Image, ImageOps
 
@@ -34,10 +35,31 @@ def spatial_signature(item):
         'crop_width', 'crop_height', 'flip_x', 'flip_y'))
 
 
-def prepare_guide_image(image, target_height, target_width, factor=1, item=None):
-    """Apply the target's resize/crop/flips, then reduce to its guide canvas."""
+def keep_aspect_guide_size(src_width, src_height, target_height, target_width, factor=1, multiple=32):
+    """guide_keep_aspect canvas: the guide's own aspect at the target's pixel area / factor**2,
+    on the /32 grid (VAE + 2x2 patch). Same aspect -> exactly target / factor. Returns (h, w)."""
     if isinstance(factor, bool) or not isinstance(factor, int) or factor < 1:
         raise ValueError('Guide factor must be a positive integer')
+    if src_width <= 0 or src_height <= 0 or target_height <= 0 or target_width <= 0:
+        raise ValueError('Guide and target sizes must be positive')
+    scale = math.sqrt(target_height * target_width / float(factor * factor) / (src_width * src_height))
+    return (max(multiple, round(src_height * scale / multiple) * multiple),
+            max(multiple, round(src_width * scale / multiple) * multiple))
+
+
+def prepare_guide_image(image, target_height, target_width, factor=1, item=None, keep_aspect=False):
+    """Apply the target's resize/crop/flips, then reduce to its guide canvas. keep_aspect: only the
+    flips; the guide keeps its whole frame and aspect (keep_aspect_guide_size)."""
+    if isinstance(factor, bool) or not isinstance(factor, int) or factor < 1:
+        raise ValueError('Guide factor must be a positive integer')
+    if keep_aspect:
+        image = ImageOps.exif_transpose(image).convert('RGB')
+        if item is not None and getattr(item, 'flip_x', False):
+            image = ImageOps.mirror(image)
+        if item is not None and getattr(item, 'flip_y', False):
+            image = ImageOps.flip(image)
+        h, w = keep_aspect_guide_size(image.width, image.height, target_height, target_width, factor)
+        return image if image.size == (w, h) else image.resize((w, h), Image.Resampling.LANCZOS)
     if target_height % (32 * factor) or target_width % (32 * factor):
         raise ValueError('Aligned guide target dimensions must be multiples of 32 * factor')
     image = ImageOps.exif_transpose(image).convert('RGB')

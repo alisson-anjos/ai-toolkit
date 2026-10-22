@@ -67,7 +67,7 @@ from toolkit.samplers.custom_flowmatch_sampler import (
 )
 
 from .src import packing
-from toolkit.aligned_guides import image_guide_channel, is_image_guide, prepare_guide_image
+from toolkit.aligned_guides import image_guide_channel, is_image_guide, keep_aspect_guide_size, prepare_guide_image
 
 packing_video_exts = [".mp4", ".avi", ".mov", ".webm", ".mkv", ".wmv", ".m4v", ".flv"]
 from .src.audio_vae import MiniMaxH3AudioVAE
@@ -217,7 +217,8 @@ class MinimaxH3Model(BaseModel):
         self._sample_ref_max_frames = None
         self.latent_space_version = "minimax_h3_v1"
         rope_options = options_from_kwargs(self.model_config.model_kwargs)
-        experimental_rope = (rope_options['reference_source_phase'] or rope_options['guide_rope_layout'] != 'overlap' or rope_options['reference_rope_layout'] != 'native')
+        experimental_rope = (rope_options['reference_source_phase'] or rope_options['guide_rope_layout'] != 'overlap' or rope_options['reference_rope_layout'] != 'native'
+                             or rope_options['guide_keep_aspect'])
         if experimental_rope and self.model_config.model_kwargs.get('dopsd', False):
             raise ValueError('Experimental reference RoPE is not supported with D-OPSD teacher conditioning')
         # caption token cap (vision blocks are never truncated); the released
@@ -584,7 +585,11 @@ class MinimaxH3Model(BaseModel):
         static video reference (``image_refs_as_video``)."""
         return image
 
-    def get_prompt_embeds(self, prompt, control_images=None) -> AdvancedPromptEmbeds:
+    def get_prompt_embeds(self, prompt, control_images=None, target_size=None) -> AdvancedPromptEmbeds:
+        """``target_size`` = (width, height) of the bucket/canvas: reference IMAGES enter the Qwen3-VL
+        presentation scaled down (never up) to its pixel area, as ComfyUI's 'match' sizing does.
+        Without it a 4 MP reference was presented raw: other tokens than inference sees, and
+        a text-embedding cache many times larger."""
         control_images = self._text_control_images(control_images)
         if isinstance(prompt, str):
             prompt = [prompt]
@@ -600,9 +605,13 @@ class MinimaxH3Model(BaseModel):
                     if img.ndim == 4:
                         img = img[0]
                     arr = (img.float().clamp(0, 1) * 255).round().to(torch.uint8)
+                    img = Image.fromarray(arr.permute(1, 2, 0).cpu().numpy())
+                    if target_size:
+                        img = packing.prepare_reference_image(img, int(target_size[1]), int(target_size[0]))
+                    return self._present_image_control(img)
+                if isinstance(img, Image.Image) and target_size:
                     return self._present_image_control(
-                        Image.fromarray(arr.permute(1, 2, 0).cpu().numpy())
-                    )
+                        packing.prepare_reference_image(img, int(target_size[1]), int(target_size[0])))
                 if isinstance(img, str):
                     # a control VIDEO path: 2 fps timestamped presentation over
                     # the SAME frames the latent rows use (dataset treatment
@@ -804,6 +813,15 @@ class MinimaxH3Model(BaseModel):
             filtered = [self._text_control_images(control) for control in controls]
             return [control for control in filtered if control is not None]
         return controls
+
+    def _guide_keep_aspect(self):
+        """guide_keep_aspect: aligned guides keep their own size/aspect (landscape guide, portrait
+        target) on the target's clock; see packing.build_packed_sequence."""
+        kw = self.model_config.model_kwargs
+        keep = options_from_kwargs(kw)['guide_keep_aspect']
+        if keep and not (kw.get("align_video_refs", False) or kw.get("align_image_refs", False)):
+            raise ValueError("guide_keep_aspect requires aligned video or image guides")
+        return keep
 
     def _reference_downscale_factor(self):
         kw = self.model_config.model_kwargs
@@ -1262,7 +1280,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
 
     def prepare_aligned_image_guide(self, image, item):
         return prepare_guide_image(image, item.crop_height, item.crop_width,
-                                   self._reference_downscale_factor(), item)
+                                   self._reference_downscale_factor(), item, self._guide_keep_aspect())
 
     def is_aligned_video_guide(self, path, dataset_config):
         if self.model_config.model_kwargs.get("align_image_refs"):
@@ -1390,11 +1408,13 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
             "align_video_refs": bool(self.model_config.model_kwargs.get("align_video_refs", False)),
             "align_image_refs": bool(self.model_config.model_kwargs.get("align_image_refs", False)),
             "image_guide_channel": self.model_config.model_kwargs.get("image_guide_channel", 1),
-            "minimax_h3_guide_spatial_version": "target_crop_v2",
+            # keep_aspect: whole guide frame at its own aspect, own grid on the target clock
+            "minimax_h3_guide_spatial_version": "keep_aspect_v1" if self._guide_keep_aspect() else "target_crop_v2",
             "minimax_h3_dataset_control_roles": sorted(getattr(self, '_dataset_control_roles', set())),
             "control_latent_only": self.control_latent_only,
             "guide_latent_only": self.guide_latent_only,
-            "minimax_h3_guide_position_version": "target_grid_stride_v1",
+            "minimax_h3_guide_position_version": ("own_grid_target_clock_v1" if self._guide_keep_aspect()
+                                                  else "target_grid_stride_v1"),
             "minimax_h3_reference_rope": {**options_from_kwargs(self.model_config.model_kwargs), 'phase_version': PHASE_VERSION},
             "minimax_h3_reference_dropout": self.model_config.model_kwargs.get("reference_dropout", 0.0),
             "minimax_h3_guide_dropout": self.model_config.model_kwargs.get("guide_dropout", 0.0),
@@ -1501,8 +1521,12 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                 img = c[ref_idx]
                 if img.ndim == 4:
                     img = img[0]
-                ph, pw = (packing.aligned_reference_pixel_size(target_h, target_w, self._reference_downscale_factor())
-                          if aligned_image else size_fn(img.shape[2], img.shape[1], target_h, target_w))
+                if aligned_image and self._guide_keep_aspect():
+                    ph, pw = keep_aspect_guide_size(img.shape[2], img.shape[1], target_h, target_w,
+                                                    self._reference_downscale_factor())
+                else:
+                    ph, pw = (packing.aligned_reference_pixel_size(target_h, target_w, self._reference_downscale_factor())
+                              if aligned_image else size_fn(img.shape[2], img.shape[1], target_h, target_w))
                 # LANCZOS like ComfyUI / the sampling path
                 resized.append(
                     torch.nn.functional.interpolate(
@@ -1627,7 +1651,12 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         ]
         cap.release()
         h0, w0 = frames[0].shape[:2]
-        if align:
+        keep_aspect = bool(align and self._guide_keep_aspect())
+        if keep_aspect:
+            # whole frame, own aspect, sample canvas area / factor**2 (as training)
+            ph, pw = keep_aspect_guide_size(w0, h0, int(gen_config.height), int(gen_config.width),
+                                            self._reference_downscale_factor())
+        elif align:
             # Same target/factor canvas rule as training; keep the exact aspect
             # and an integer patch-grid ratio rather than matching only the area.
             ph, pw = packing.aligned_reference_pixel_size(
@@ -1641,7 +1670,8 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
             )
         if align:
             frames = [np.asarray(prepare_guide_image(Image.fromarray(f), gen_config.height,
-                       gen_config.width, self._reference_downscale_factor())) for f in frames]
+                       gen_config.width, self._reference_downscale_factor(), keep_aspect=keep_aspect))
+                      for f in frames]
             h0, w0 = frames[0].shape[:2]
         pixels = torch.from_numpy(np.stack(frames)).float() / 255.0 * 2.0 - 1.0
         pixels = pixels.permute(3, 0, 1, 2)[None]  # (1, 3, T, H, W)
@@ -1746,6 +1776,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                     align=align,
                     reference_downscale_factor=self._reference_downscale_factor() if align else 1,
                     file_item=batch.file_items[item_idx] if align else None,
+                    keep_aspect=bool(align and self._guide_keep_aspect()),
                 )
                 lats.append(entry["latent"].to(device, torch.float32))
                 auds.append(entry.get("audio_rows"))
@@ -1844,7 +1875,8 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                 img = Image.open(path).convert("RGB")
                 if self.sample_control_is_guide(gen_config, slot, path):
                     img = prepare_guide_image(img, gen_config.height, gen_config.width,
-                                              self._reference_downscale_factor())
+                                              self._reference_downscale_factor(),
+                                              keep_aspect=self._guide_keep_aspect())
                     import numpy as np
                     pixels = torch.from_numpy(np.asarray(img).copy()).float().permute(2, 0, 1)
                     latent = self.encode_keyframe_latents((pixels / 127.5 - 1)[None, :, None])[0]
