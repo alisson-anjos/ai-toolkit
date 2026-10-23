@@ -1,0 +1,303 @@
+{
+  "cases": [
+    {
+      "case": "05_two_people_scene",
+      "title": "Two performers: separate identities + a new setting",
+      "local_manifest_membership": "validation",
+      "prompt": "motion_transfer: Replace the guide man initially on the right with the short-haired man from <Picture 1>, wearing the dark hoodie and dark trousers shown there. Replace the guide woman initially on the left with the dark-haired woman from <Picture 2>, wearing the navy T-shirt and dark trousers shown there. Each picture contains views of one identity, not extra people. Keep these bindings fixed when either person moves or overlaps. Replace the entire indoor room with a wind-swept desert ridge at dusk. Transfer the original gestures, facial performance and timing, preserving the source camera trajectory and framing. Adapt lighting and shadows coherently to the desert. Do not retain the indoor wall or create a new action sequence.",
+      "reference_count": 2,
+      "generated_width": 288,
+      "generated_height": 512,
+      "frames": 107,
+      "fps": 24,
+      "condition": "native_on_off",
+      "jobs": [
+        {
+          "case_key": "05_two_people_scene__tara1000__tara",
+          "prompt_id": "aef0435b-4bc7-4e57-980e-a2b1d4f74405"
+        },
+        {
+          "case_key": "05_two_people_scene__baseline10500__tara",
+          "prompt_id": "713fc333-51a0-4dde-a1ee-be5cf8e322e9"
+        },
+        {
+          "case_key": "05_two_people_scene__baseline10500__native",
+          "prompt_id": "5c71dd63-d7e6-4487-9609-a43137c5e804"
+        }
+      ]
+    },
+    {
+      "case": "07_background_ref",
+      "title": "Character and background image references",
+      "local_manifest_membership": "validation",
+      "prompt": "motion_transfer: subject_definitions: <Subject 1> is a woman with a straight blond bob, a silver party crown with white trim, and a white T-shirt with a small dark crown and number design, whose identity and visible appearance are defined by <Picture 1>. <Subject 1> follows the subject marked in magenta in <Video 1>, corresponding to the principal performer in the source video in the original footage. This color-to-subject assignment stays fixed when subjects exchange positions, overlap, leave and reenter the frame, and across camera cuts. <Video 1> is the motion and performance guide with color-coded subject markings. The main marking color of each subject identifies its track; facial highlights are performance annotations. These colors identify tracks only; do not copy these colors or marker materials onto skin, fur, clothing, eyes or held objects. Match each assigned track at the same timestamps; track identity is independent of screen position. Preserve the interaction with visible objects, contact points and action timing.  The environment in <Picture 2> defines the target location, architecture, furnishings, colors and visible lighting. It is a setting reference, not a second character.  summary: [reference generation] Transfer each assigned guide performance to its reference character: the subject marked in magenta to <Subject 1>. Keep the identities separate throughout the video.  Use the environment from <Picture 2> throughout the output while following the performance and timing of <Video 1>.  retention_analysis: <Subject 1>: fully_preserved - retain the referenced face, hair or fur, body proportions, clothing and accessories from <Picture 1>; transfer motion from the subject marked in magenta, including visible mouth articulation, blinking and gaze.  Environment: attribute_transfer - reproduce the setting shown in <Picture 2>; reference color markings bind only the performer to <Picture 1>.  detailed_description: An interior decorated for a celebration, with colorful balloons, a yellow seat and curtains behind the subject. A close view of the upper body. Follow the temporal progression of the guide. [Shot 1] The subject turns her head, speaks with changing mouth shapes, and raises open hands near her chest. Follow the original motion, facial performance and camera-cut timing frame by frame. Use reference appearances rather than guide-marking appearance. Do not exchange identities or reference outfits between tracks.  Use <Picture 2> for the output environment, not for performer identity or motion. Preserve the guide performance and necessary hand-held objects and interaction contacts.  overall_soundscape: N/A  non_diegetic_music: N/A",
+      "reference_count": 2,
+      "generated_width": 512,
+      "generated_height": 288,
+      "frames": 107,
+      "fps": 24,
+      "condition": "native_on_off",
+      "jobs": [
+        {
+          "case_key": "07_background_ref__tara1000__tara",
+          "prompt_id": "8bd2056c-6f23-4583-a008-3a2a60d2c628"
+        },
+        {
+          "case_key": "07_background_ref__baseline10500__tara",
+          "prompt_id": "898b96e3-1aac-4175-9a38-7aaa34347729"
+        },
+        {
+          "case_key": "07_background_ref__baseline10500__native",
+          "prompt_id": "1c457815-e974-4f41-a113-39622f022188"
+        }
+      ]
+    },
+    {
+      "case": "10_riders_horses",
+      "title": "Two riders: new identities and setting; preserve the horses",
+      "local_manifest_membership": "train",
+      "prompt": "motion_transfer: subject_definitions: The target appearance references are <Picture 1>, <Picture 2>: man in a maroon royal cloak and woman in a blue gown. <Picture 1> supplies the male rider and <Picture 2> the female rider; preserve the source horse-riding action while changing the setting.  summary: [reference generation] Transfer the source performance and camera timing from <Video 1> using the specified reference roles. The target setting is a desert landscape at sunset.  retention_analysis: Preserve each assigned identity, visible appearance and reference role across the clip; multiple views of one identity are not additional performers. Keep objects, clothing and backgrounds separate from identity references.  detailed_description: [Shot 1] <Picture 1> supplies the male rider and <Picture 2> the female rider; preserve the source horse-riding action while changing the setting. The scene is a desert landscape at sunset. Follow the guide action order, visible gestures, head movements, facial performance, camera motion and temporal alignment.  overall_soundscape: N/A  non_diegetic_music: N/A",
+      "reference_count": 2,
+      "generated_width": 288,
+      "generated_height": 512,
+      "frames": 107,
+      "fps": 24,
+      "condition": "native_on_off",
+      "jobs": [
+        {
+          "case_key": "10_riders_horses__tara1000__tara",
+          "prompt_id": "d49c98c6-00a9-4d89-992c-eeaf5242bb65"
+        },
+        {
+          "case_key": "10_riders_horses__baseline10500__tara",
+          "prompt_id": "0437c796-d59f-45bf-a4c6-bfbe419e5a33"
+        },
+        {
+          "case_key": "10_riders_horses__baseline10500__native",
+          "prompt_id": "097e1c03-cb8c-4ef0-9805-eef6b2837aed"
+        }
+      ]
+    },
+    {
+      "case": "01_closeup",
+      "title": "Close-up identity transfer",
+      "local_manifest_membership": "validation",
+      "prompt": "motion_transfer: Replace the main male performer in <Video 1> with the woman from <Picture 1>, preserving her straight blonde chin-length bob, silver paper party crown and white graphic T-shirt throughout the clip. Transfer the original speaking mouth movements, head turns, facial expressions and hand gestures with the same timing. Preserve the source outdoor architectural environment, camera movement, framing and interaction with visible objects. The reference pose and grey photo background do not define the output pose or setting.",
+      "reference_count": 1,
+      "generated_width": 512,
+      "generated_height": 288,
+      "frames": 107,
+      "fps": 24,
+      "condition": "tara_on_only",
+      "jobs": [
+        {
+          "case_key": "01_closeup__tara1000__tara",
+          "prompt_id": "fba319da-da33-4609-a5ca-34e74c05b5c2"
+        },
+        {
+          "case_key": "01_closeup__baseline10500__tara",
+          "prompt_id": "5b1d5e59-1380-48ca-b69d-13a6c10ff1a6"
+        }
+      ]
+    },
+    {
+      "case": "02_full_body",
+      "title": "Full-body performance",
+      "local_manifest_membership": "validation",
+      "prompt": "motion_transfer: subject_definitions: <Subject 1> is A young woman with dark hair styled in an updo with decorative hairpins, wearing a black, sequined, form-fitting dress with gold embroidery, black fingerless gloves, and holding a black folding fan. She is kneeling on one knee with her left hand on the ground and her right hand holding the fan, looking directly at the camera with a slight smile from <Picture 1>. The appearance of <Subject 1> comes from <Picture 1>; its corresponding performance and motion come from <Video 1>. <Video 1> is the source motion and performance guide. summary: [reference generation] The task is to animate the identity from <Picture 1> using the motion from <Video 1>. retention_analysis: attribute_transfer: The motion of lying down, rolling, and extending limbs is transferred from SOURCE to TARGET. fully_preserved: The subject's identity, including her black sequined dress, gold embroidery, black gloves, and fan, is fully preserved from <Picture 1> in the TARGET animation. detailed_description: The visual style is a dramatic, stylized stage performance with theatrical lighting, red and black drapes, and a wooden platform. [Shot 1] The subject is kneeling on a wooden platform, holding a black folding fan, looking at the camera. [Shot 2] She rolls onto her back, extending her arms and legs, then rolls onto her side. [Shot 3] She sits up, extends her right arm holding the fan, and looks toward the camera. The TARGET setting is a stage with red and black drapes and a wooden platform, contrasting with the outdoor park setting of the SOURCE motion. The TARGET framing is three-quarter, showing the subject from the waist up. The motion is transferred from the SOURCE, but the appearance and setting are from the reference. overall_soundscape: N/A non_diegetic_music: N/A",
+      "reference_count": 1,
+      "generated_width": 512,
+      "generated_height": 288,
+      "frames": 107,
+      "fps": 24,
+      "condition": "tara_on_only",
+      "jobs": [
+        {
+          "case_key": "02_full_body__tara1000__tara",
+          "prompt_id": "0f25368e-595f-42ac-9875-8cc16d2ed102"
+        },
+        {
+          "case_key": "02_full_body__baseline10500__tara",
+          "prompt_id": "7d643889-2457-459a-8ce0-86bcd45659a9"
+        }
+      ]
+    },
+    {
+      "case": "03_identity_outfit",
+      "title": "Identity and outfit references",
+      "local_manifest_membership": "validation",
+      "prompt": "motion_transfer: Replace the guide woman with the blonde woman from <Picture 1>. Use <Picture 1> for her face and hair, and <Picture 2> exclusively for the outfit: a light beige cropped jacket and matching crop top, black fitted trousers, tall brown boots and the pictured accessories. The outfit collage is not a second person. Keep her identity and outfit stable. Transfer the walking, turns, head motion, gestures and bag handling from <Video 1> with the same timing. Preserve the source street, camera movement and framing.",
+      "reference_count": 2,
+      "generated_width": 288,
+      "generated_height": 512,
+      "frames": 107,
+      "fps": 24,
+      "condition": "tara_on_only",
+      "jobs": [
+        {
+          "case_key": "03_identity_outfit__tara1000__tara",
+          "prompt_id": "610ede97-746b-4707-aff4-bd4a56138339"
+        },
+        {
+          "case_key": "03_identity_outfit__baseline10500__tara",
+          "prompt_id": "d6fd5b2d-0cfa-42b0-b7b3-d81ec3d9267e"
+        }
+      ]
+    },
+    {
+      "case": "04_three_anime",
+      "title": "Three characters with separate references",
+      "local_manifest_membership": "validation",
+      "prompt": "motion_transfer: Replace only the three foreground performers in <Video 1>. The performer initially in the centre uses the spiky dark-haired male character in the dark purple shirt and black trousers from <Picture 1>. The performer initially on the left uses the long brown-haired woman in the pale pink cropped jacket and short pleated skirt from <Picture 2>. The performer initially on the right uses the green-haired woman in the red floral cheongsam from <Picture 3>. Each reference picture defines one identity, including when it contains several views of that identity. Preserve the assigned face, hair, body and outfit throughout the video. Bind each reference to its original performer track, not a changing screen position. Transfer the original dance sequence, gestures, head movements and timing. Preserve the street environment and source camera movement; do not add extra performers.",
+      "reference_count": 3,
+      "generated_width": 288,
+      "generated_height": 512,
+      "frames": 107,
+      "fps": 24,
+      "condition": "tara_on_only",
+      "jobs": [
+        {
+          "case_key": "04_three_anime__tara1000__tara",
+          "prompt_id": "84e653a5-4b97-402a-9671-f9078342f222"
+        },
+        {
+          "case_key": "04_three_anime__baseline10500__tara",
+          "prompt_id": "47ddf2f1-7c73-47d4-a5bc-63926b5c5c51"
+        }
+      ]
+    },
+    {
+      "case": "06_three_people",
+      "title": "Three identities in a crowded scene",
+      "local_manifest_membership": "validation",
+      "prompt": "motion_transfer: Replace the three closest foreground people in <Video 1>, using their positions in the first frame to establish the tracks. The initially left foreground person uses the bald bearded man with dark glasses and a black leather jacket from <Picture 1>. The initially central foreground person uses the short-haired man in a dark fur coat, bright printed shirt and red trousers from <Picture 2>. The initially right foreground person uses the cowboy figure with a skull-like face, brown wide-brimmed hat, green jacket and tan trousers from <Picture 3>. Keep each assignment fixed as the people move or overlap; other crowd members retain their source appearances. Transfer the original gestures, head motion and timing without adding a new action sequence. Preserve the source crowded location, camera movement and framing.",
+      "reference_count": 3,
+      "generated_width": 288,
+      "generated_height": 512,
+      "frames": 107,
+      "fps": 24,
+      "condition": "tara_on_only",
+      "jobs": [
+        {
+          "case_key": "06_three_people__tara1000__tara",
+          "prompt_id": "553fe4f9-a10c-47b2-bafa-844af95ca917"
+        },
+        {
+          "case_key": "06_three_people__baseline10500__tara",
+          "prompt_id": "52344d40-c77b-462e-a1f3-cad211845064"
+        }
+      ]
+    },
+    {
+      "case": "08_human_to_dog",
+      "title": "Human performance to a dog reference",
+      "local_manifest_membership": "constructed: held-out human guide + training-overlap animal reference",
+      "prompt": "motion_transfer: Replace the main human performer in <Video 1> with the rough-coated collie from <Picture 1>, preserving its long grey, tan and white coat, dark muzzle and pointed ears consistently. Retarget the original head movements, visible mouth performance and upper-body gestures to the dog while preserving action timing and camera framing. Preserve the source outdoor architectural setting. Do not copy the reference photograph background or add a second performer.",
+      "reference_count": 1,
+      "generated_width": 512,
+      "generated_height": 288,
+      "frames": 107,
+      "fps": 24,
+      "condition": "tara_on_only",
+      "jobs": [
+        {
+          "case_key": "08_human_to_dog__tara1000__tara",
+          "prompt_id": "abb101a2-cff9-4aa6-b5f7-d791d72d9833"
+        },
+        {
+          "case_key": "08_human_to_dog__baseline10500__tara",
+          "prompt_id": "a4ce498b-5b67-4635-aee4-af8f364e1921"
+        }
+      ]
+    },
+    {
+      "case": "09_dog_two_views",
+      "title": "One dog identity, two reference views",
+      "local_manifest_membership": "train",
+      "prompt": "motion_transfer: subject_definitions: <Subject 1> is the golden curly-coated small dog shown in <Picture 1> and <Picture 2>.  summary: [reference generation] Bind <Subject 1> to the foreground dog in <Video 1>, in the listed order. Transfer the guide performance with its original timing. Keep the guide setting: a sunlit meadow with other dogs.  retention_analysis: Keep each assigned reference identity and its visible clothing or fur stable throughout the clip. Multiple views of one individual do not define additional characters.  detailed_description: [Shot 1] The target shows dog dance in a sunlit meadow with other dogs. Match <Video 1> frame by frame for action order, body pose, gestures, head motion, visible facial performance and camera trajectory. Preserve actor-to-reference assignments through the visible motion and occlusions. Keep the guide setting: a sunlit meadow with other dogs.  overall_soundscape: N/A  non_diegetic_music: N/A",
+      "reference_count": 2,
+      "generated_width": 288,
+      "generated_height": 512,
+      "frames": 107,
+      "fps": 24,
+      "condition": "tara_on_only",
+      "jobs": [
+        {
+          "case_key": "09_dog_two_views__tara1000__tara",
+          "prompt_id": "ffa0a797-e8bd-45ba-ad62-4d5f22a78f43"
+        },
+        {
+          "case_key": "09_dog_two_views__baseline10500__tara",
+          "prompt_id": "c51d82b8-0b99-4479-acd1-5f828dbd735c"
+        }
+      ]
+    }
+  ],
+  "media": [
+    {
+      "file": "tara_additional_examples.mp4",
+      "sha256": "cd830f79840dbf1517ca33e0e4b9711da1da180ec64cc0757a667554f4426619",
+      "probe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "width": 1920,
+            "height": 820,
+            "r_frame_rate": "24/1",
+            "nb_frames": "1498"
+          }
+        ],
+        "format": {
+          "duration": "62.416667",
+          "size": "7378994"
+        }
+      }
+    },
+    {
+      "file": "tara_native_on_off.mp4",
+      "sha256": "42510d458a38fba09713537e6fded40855723321c024f758c5f15bc61f04b23f",
+      "probe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "width": 1920,
+            "height": 820,
+            "r_frame_rate": "24/1",
+            "nb_frames": "642"
+          }
+        ],
+        "format": {
+          "duration": "26.750000",
+          "size": "3091182"
+        }
+      }
+    }
+  ],
+  "settings": {
+    "base": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "frozen_adapter": "training_adapter_v2 at strength1",
+    "task_lora_strength": 1,
+    "seed": 424242,
+    "sampler": "euler",
+    "steps": 28,
+    "cfg": 1,
+    "shift_video": 12,
+    "shift_audio": 3,
+    "tara_backend": "flash partitions (no compile)",
+    "tara": {
+      "strength": 2,
+      "window_seconds": 0.2,
+      "falloff_seconds": 0.25,
+      "max_penalty": 6
+    }
+  },
+  "notes": [
+    "The old TARA1000 checkpoint is unfinished; the author reports an incorrect training setup. A replacement is training from scratch and is not shown.",
+    "The TARA-OFF column still uses motion10500 and adapterV2. It is native reference conditioning, not Add Guide or a no-LoRA baseline.",
+    "Validation membership refers to the new multiscale dataset split, not a verified held-out evaluation of either older checkpoint. Some guides are reused across cases.",
+    "No new GPU generations for these videos; existing first107frame results are replayed twice.",
+    "The seven additional examples have no matched TARA-OFF control."
+  ]
+}

@@ -1,6 +1,6 @@
 # TARA-H3: Temporally Aligned Reference Attention for Native Video Conditioning
 
-**Alisson Anjos** · Technical report v0.1.1 · October 23, 2026  
+**Alisson Anjos** · Technical report v0.1.2 · October 23, 2026<br>
 **Status:** experimental implementation and preliminary evidence; not peer reviewed.
 
 ## Abstract
@@ -158,7 +158,44 @@ These numbers demonstrate feasibility and motivate further measurement. They are
 
 In author-run ComfyUI tests, a motion-transfer LoRA previously trained using aligned guide latents also worked with the native temporal patch. A newly trained early temporal checkpoint showed weaker identity retention in some clips. These observations suggest that useful learned behavior can transfer across conditioning modes, but do not isolate the contribution of weights, prompts, RoPE alignment, attention bias, or sampling settings.
 
-The user-facing demonstration page includes synchronized videos and reference images: [BFS Flash Partitions documentation](https://github.com/alisson-anjos/ComfyUI-BFSNodes/blob/feat/h3-native-temporal/docs/H3_FLASH_PARTITIONS.md). Demonstrations are qualitative examples, not a representative benchmark. Pixel difference and PSNR against a guide are not sufficient quality metrics when subjects or backgrounds are intentionally changed.
+The user-facing demonstration page includes synchronized videos and reference images: [BFS Flash Partitions documentation](https://github.com/alisson-anjos/ComfyUI-BFSNodes/blob/main/docs/H3_FLASH_PARTITIONS.md). Demonstrations are qualitative examples, not a representative benchmark. Pixel difference and PSNR against a guide are not sufficient quality metrics when subjects or backgrounds are intentionally changed.
+
+### 4.4 Synchronized video examples
+
+**The step-1000 TARA-trained LoRA is an unfinished, retired experiment. The author reports that its training setup was incorrect; a replacement is currently training from scratch. The replacement's results are not shown here.** These videos must not be read as the final quality of a dedicated TARA LoRA.
+
+#### Native reference: TARA ON versus OFF
+
+[![Three synchronized examples, with source guide, unfinished TARA-trained LoRA, guide-trained LoRA with TARA, and the same guide-trained LoRA without TARA](evidence/media/tara_native_on_off.jpg)](evidence/media/tara_native_on_off.mp4)
+
+**[Watch / download the three-example comparison (MP4, approximately 3.1 MB)](evidence/media/tara_native_on_off.mp4)**. Each example plays twice; the compilation is 26.75 seconds. Click the preview to open the video; Markdown viewers may offer a separate player or download.
+
+| Column | Inference conditioning | Task LoRA | TARA patch |
+|---|---|---|---|
+| Source motion guide | Input only | — | — |
+| Native reference · TARA ON | Native H3 video reference | Unfinished TARA-trained checkpoint 1000 | ON |
+| Native reference · TARA ON | Native H3 video reference | Guide-latent-trained motion checkpoint 10500 | ON |
+| Native reference · TARA OFF | Native H3 video reference | **The same** guide-latent-trained checkpoint 10500 | OFF |
+
+**“Guide-latent-trained” describes how the LoRA was trained, not the inference path shown. All three generated columns use native video reference conditioning, without Add Guide.** The final column retains the 10500 LoRA and frozen V2 adapter; it is not a base-only/no-LoRA control. Comparing the last two columns illustrates changes in timing and pose progression with the full TARA patch enabled versus disabled. It does not separately isolate temporal RoPE, attention bias and kernel implementation, or establish a general fix for flicker.
+
+The three cases show two performers with separate identities and a requested new setting; a character reference plus a background image; and two riders with retained horses and a requested new setting. Reference thumbnails and settings appear in the videos. In the middle case, the silver party crown is present in Picture 1 **and explicitly described in the prompt**; it is not introduced by temporal alignment.
+
+#### Seven additional TARA-ON examples
+
+[![Additional examples: identity close-up, full-body motion, outfit reference, multiple characters and animals](evidence/media/tara_additional_examples.jpg)](evidence/media/tara_additional_examples.mp4)
+
+**[Watch / download seven more examples (MP4, approximately 7.4 MB)](evidence/media/tara_additional_examples.mp4)**. Each example shows the source, old unfinished TARA 1000 LoRA with TARA, motion 10500 LoRA with TARA, and the reference images. These additional cases **do not have a matched TARA-OFF control**, so they illustrate behavior rather than an ON/OFF ablation.
+
+Cases cover close-up identity transfer, full-body performance, separate identity/outfit references, three anime characters, three people in a crowded scene, a human performance with an animal reference, and two views of one dog identity. Including a case does not certify correct identity binding, anatomy, clothing or motion. No result was semantically retouched; clips were fitted into labelled panels and repeated for viewing.
+
+#### Scope and reproducibility
+
+Across each case, source media, prompt, seed 424242, canvas, 107 frames at 24 fps, Euler 28 steps, CFG 1, sigma shifts12/3, frozen V2 adapter and task-LoRA strength 1 are fixed. TARA uses Flash Partitions with strength 2, window 0.2 s, falloff 0.25 s and cap 6. Source guides are resampled and fit/padded exactly as the benchmark loader. The two LoRAs have **different training data, recipes and budgets (1000 versus 10500 steps)**; their side-by-side quality is not a controlled comparison of training methods.
+
+The three ON/OFF cases are the cases in the existing battery with complete native-reference controls. The other seven show only the two TARA-ON variants. These are ten prepared cases, with some source motion reused, not ten independent unseen videos. “Validation-manifest” in a panel refers to the **new multiscale dataset split**; overlap with the training histories of both old checkpoints has not been ruled out. Dog/rider cases include training-overlap material, and human-to-dog uses a mixed-provenance reference. No new GPU generation was run for this presentation.
+
+Exact prompts, case membership, job IDs, settings, media checksums and video metadata are in [the media manifest](evidence/media/manifest.json). Interpret the examples as qualitative evidence, not a representative benchmark, proof of universal superiority, or evidence about long-clip/cut robustness beyond the short excerpts shown.
 
 ## 5. Reproduction
 
@@ -220,8 +257,8 @@ This document is an openly available **technical report/software artifact**, not
   year = {2026},
   institution = {Independent research},
   type = {Technical report},
-  number = {v0.1.1},
-  url = {https://github.com/alisson-anjos/ai-toolkit/tree/tara-h3-v0.1.1/research/tara-h3},
+  number = {v0.1.2},
+  url = {https://github.com/alisson-anjos/ai-toolkit/tree/tara-h3-v0.1.2/research/tara-h3},
   note = {Experimental implementation; not peer reviewed}
 }
 ```
@@ -237,5 +274,6 @@ This document is an openly available **technical report/software artifact**, not
 
 ## Version history
 
+- **v0.1.2 — 2026-10-23:** Add synchronized native-reference TARA ON/OFF videos, seven additional visual cases, exact prompts/settings and provenance/training caveats.
 - **v0.1.1 — 2026-10-23:** Replace the unsupported math-renderer macro in Section 3.2 with an explicit log-sum-exp definition; numerical method unchanged. Clarify the inherited spatial RoPE normalization.
 - **v0.1.0 — 2026-10-23:** Initial implementation-oriented report, equations, diagrams, numerical evidence, isolated timing data, reproduction pointers, and limitations.
