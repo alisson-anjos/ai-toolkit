@@ -83,6 +83,7 @@ from .src.packing import (
     remap_sigma,
     unpatchify_video_tokens,
 )
+from toolkit.h3_native_multiscale import motion_scale
 from .src.pipeline import MiniMaxH3Pipeline
 from .src.ref_video_cache import (
     load_ref_video_latent,
@@ -1419,6 +1420,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         """LoRA consumers must reproduce the guide geometry used in training."""
         return {
             "native_temporal_alignment": {"version": native_temporal.VERSION, **self.native_temporal_options},
+            "native_reference_training_scales": self.model_config.model_kwargs.get("native_reference_training_scales", [1.0]),
             "reference_downscale_factor": self._reference_downscale_factor(),
             "align_video_refs": bool(self.model_config.model_kwargs.get("align_video_refs", False)),
             "align_image_refs": bool(self.model_config.model_kwargs.get("align_image_refs", False)),
@@ -1789,6 +1791,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                 entry = load_ref_video_latent(
                     self, per_item[ref_idx], batch.dataset_config, target_h, target_w,
                     align=align,
+                    native_scale=motion_scale(batch, batch.file_items[item_idx], ref_idx, self.native_temporal_options),
                     reference_downscale_factor=self._reference_downscale_factor() if align else 1,
                     file_item=batch.file_items[item_idx] if (align or self.native_temporal_options['enabled']) else None,
                     keep_aspect=bool(align and self._guide_keep_aspect()),

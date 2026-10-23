@@ -8,6 +8,7 @@ import importlib.util
 import sys
 from PIL import Image
 from toolkit.h3_reference_rope import options_from_kwargs, PHASE_VERSION
+from toolkit import h3_native_temporal as native_temporal
 
 from pathlib import Path
 
@@ -40,6 +41,6 @@ def source_function(path, name, namespace, class_name=None):
 
 
 def model_method(name, class_name='MinimaxH3Model', **namespace):
-    return source_function(MODEL, name, {'options_from_kwargs': options_from_kwargs, 'PHASE_VERSION': PHASE_VERSION, 'packing': packing, 'Image': Image, 'prepare_guide_image': prepare_guide_image,
+    return source_function(MODEL, name, {'native_temporal': native_temporal, 'options_from_kwargs': options_from_kwargs, 'PHASE_VERSION': PHASE_VERSION, 'packing': packing, 'Image': Image, 'prepare_guide_image': prepare_guide_image,
                                           'spatial_signature': spatial_signature, 'image_guide_channel': image_guide_channel,
                                           'is_image_guide': is_image_guide, 'keep_aspect_guide_size': keep_aspect_guide_size, **namespace}, class_name)

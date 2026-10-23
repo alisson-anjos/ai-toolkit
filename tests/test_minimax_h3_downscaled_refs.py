@@ -91,7 +91,8 @@ def clip(tmp_path):
 def cache_helpers():
     from minimax_h3_test_utils import prepare_guide_image, spatial_signature
     from PIL import Image
-    ns = dict(prepare_guide_image=prepare_guide_image, spatial_signature=spatial_signature, Image=Image, torch=torch, cv2=cv2, np=np, os=os, json=json, base64=base64, hashlib=hashlib,
+    from toolkit.h3_native_multiscale import scaled_native_size, validate_scales
+    ns = dict(scaled_native_size=scaled_native_size, validate_scales=validate_scales, prepare_guide_image=prepare_guide_image, spatial_signature=spatial_signature, Image=Image, torch=torch, cv2=cv2, np=np, os=os, json=json, base64=base64, hashlib=hashlib,
               load_file=load_file, save_file=save_file,
               get_quick_signature_string=lambda path: str(os.stat(path).st_size),
               reference_video_pixel_size=packing.reference_video_pixel_size,
@@ -152,6 +153,7 @@ def test_sampling_uses_same_guide_size_as_training(clip, monkeypatch):
 
 def test_metadata_round_trip_and_lora_save_hook(tmp_path):
     class Model:
+        native_temporal_options = {'enabled': False}
         model_config = SimpleNamespace(model_kwargs={'align_video_refs': True, 'reference_downscale_factor': 2})
         control_latent_only = True
         guide_latent_only = False

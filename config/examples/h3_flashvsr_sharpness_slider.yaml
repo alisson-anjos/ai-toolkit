@@ -112,16 +112,16 @@ config:
         auxiliary_loss_sample_frames: 2
         guide_keep_aspect: true
         native_temporal_alignment: false
-    name: kagemane_h3_anything_swap_vfx_v1
+    name: h3_flashvsr_sharpness_slider_r2_pilot
     meta:
-      name: kagemane_h3_anything_swap_vfx_v1
+      name: h3_flashvsr_sharpness_slider_r2_pilot
     slider:
       min_scale: 0.25
       residual_cap: 1.0
       anchor_probability: 0.1
   meta:
-    name: kagemane_h3_anything_swap_vfx_v1
+    name: h3_flashvsr_sharpness_slider_r2_pilot
     version: '1.0'
 meta:
-  name: kagemane_h3_anything_swap_vfx_v1
+  name: h3_flashvsr_sharpness_slider_r2_pilot
   version: '1.0'

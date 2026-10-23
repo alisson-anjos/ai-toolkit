@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 
+from toolkit.h3_native_multiscale import scaled_native_size, validate_scales
 from toolkit.aligned_guides import keep_aspect_guide_size, prepare_guide_image, spatial_signature
 from PIL import Image
 
@@ -180,10 +181,14 @@ def load_ref_video_latent(
     reference_downscale_factor: int = 1,
     file_item=None,
     keep_aspect: bool = False,
+    native_scale: float = 1.0,
 ) -> dict:
     """Returns {"latent": (C, T, h, w) cpu tensor, "num_frames": int},
     encoding + disk-caching on first use. ``model`` is the MinimaxH3 model
     (used for the VAE, audio encode and the frame-count snapper)."""
+    native_scale = validate_scales([native_scale])[0]
+    if native_scale != 1 and (align or not getattr(model, "native_temporal_options", {}).get("enabled", False)):
+        raise ValueError("native_scale requires unaligned TARA video references")
     factor = validate_reference_downscale_factor(reference_downscale_factor)
     if factor > 1 and not align:
         raise ValueError("reference_downscale_factor > 1 requires an aligned reference")
@@ -210,7 +215,7 @@ def load_ref_video_latent(
                           getattr(dataset_config, "max_auto_frame_seconds", None),
                           tuple(target_indices) if target_indices else None, target_fps)
     mem_key = (path, int(target_height), int(target_width), bool(align), factor,
-               crop_signature, temporal_signature, keep_aspect)
+               crop_signature, temporal_signature, keep_aspect, native_scale)
     if mem_key in mem_cache:
         return mem_cache[mem_key]
 
@@ -254,6 +259,9 @@ def load_ref_video_latent(
         "latent_space_version": model.latent_space_version,
         "is_ref_video": True,
     }
+    if native_scale != 1:
+        hash_dict["native_scale_v1"] = native_scale
+        hash_dict["native_target_hw"] = (int(target_height), int(target_width))
     cache_file = _cache_path(path, hash_dict)
     if os.path.exists(cache_file):
         cap.release()
@@ -278,6 +286,7 @@ def load_ref_video_latent(
         # with the ref's own aspect: same aspect -> identical size; aspect-
         # preserving resize, no crop
         out_h, out_w = reference_video_pixel_size(src_w, src_h, target_height, target_width)
+        out_h, out_w = scaled_native_size(out_h, out_w, native_scale)
 
     indices = ref_frame_indices(
         total, src_fps, num_frames, dataset_config.fps, trim_tail

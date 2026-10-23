@@ -25,3 +25,19 @@ def test_bound_is_per_sample_and_targets_detached():
 @pytest.mark.parametrize('scale',[-1,1.1,float('nan')])
 def test_invalid_scale(scale):
     with pytest.raises(ValueError):residual_target(torch.zeros(1,2),torch.ones(1,2),scale)
+
+
+def test_example_uses_one_output_namespace():
+    import yaml
+    from pathlib import Path
+    root=Path(__file__).resolve().parents[1]
+    cfg=yaml.safe_load((root/'config/examples/h3_flashvsr_sharpness_slider.yaml').read_text())
+    name=cfg['config']['name']
+    def check(x):
+        if isinstance(x,dict):
+            for k,v in x.items():
+                if k=='name':assert v==name
+                else:check(v)
+        elif isinstance(x,list):
+            for v in x:check(v)
+    check(cfg)
