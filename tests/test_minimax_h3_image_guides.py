@@ -49,6 +49,7 @@ def test_guide_role_uses_control_channel_not_first_available_image():
 def test_actual_training_builder_image_guide_and_native_identity():
     encoded = []
     class Model:
+        native_temporal_options = {'enabled': False}
         model_config = NS(model_kwargs={'align_image_refs': True, 'align_video_refs': True,
                                        'guide_latent_only': True, 'reference_downscale_factor': 4})
         _reference_dropout_probabilities = lambda self: (0, 0)

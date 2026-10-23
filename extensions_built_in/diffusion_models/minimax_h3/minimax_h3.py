@@ -659,6 +659,8 @@ class MinimaxH3Model(BaseModel):
 
         embeds_list, tags_list = [], []
         for p, keyframes in zip(prompt, keyframes_per_prompt):
+            if keyframes and getattr(self, 'native_temporal_options', {}).get('enabled', False):
+                keyframes = native_temporal.reference_order(keyframes, lambda item: isinstance(item, VideoRef))
             embeds, tags = encode_minimax_h3_prompt(
                 self.text_encoder,
                 self.tokenizer,
@@ -1879,10 +1881,13 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         # videos are dataset-style encoded into multi-frame latent blocks
         ref_images = []
         ref_source_ids = []
-        for slot, path in ((1, gen_config.ctrl_img), (1, gen_config.ctrl_img_1),
-                           (2, gen_config.ctrl_img_2), (3, gen_config.ctrl_img_3)):
-            if path is None:
-                continue
+        controls = [(slot, path) for slot, path in (
+            (1, gen_config.ctrl_img), (1, gen_config.ctrl_img_1),
+            (2, gen_config.ctrl_img_2), (3, gen_config.ctrl_img_3)) if path is not None]
+        if getattr(self, 'native_temporal_options', {}).get('enabled', False):
+            controls = native_temporal.reference_order(
+                controls, lambda item: os.path.splitext(str(item[1]))[1].lower() in packing_video_exts)
+        for slot, path in controls:
             ref_source_ids.append(slot)
             if os.path.splitext(str(path))[1].lower() in packing_video_exts:
                 ref_images.append(

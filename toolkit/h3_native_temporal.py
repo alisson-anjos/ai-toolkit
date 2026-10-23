@@ -29,6 +29,11 @@ def options(kwargs):
         raise ValueError('Native temporal mode requires native references, no AddGuide alignment or source-phase patch')
     return result
 
+def reference_order(items, is_video):
+    """Native H3 packs Pictures before Videos; preserve order within each kind."""
+    return sorted(items, key=lambda item: bool(is_video(item)))
+
+
 def align_layout(layout, ref_blocks, source_ids, cfg):
     """Return a sequence-row mask, aligning only the explicit motion video's clock.
 
