@@ -57,3 +57,5 @@ The preceding prerequisite commit includes reference aspect preservation, source
 ## ComfyUI consumer
 
 The corresponding BFSNodes implementation is published separately on [`feat/h3-native-temporal`](https://github.com/alisson-anjos/ComfyUI-BFSNodes/tree/feat/h3-native-temporal). It provides a standalone MODEL patch node and a native-temporal option in Shot H3 Conditioning, with the same policy defaults. See [BFS inference instructions](https://github.com/alisson-anjos/ComfyUI-BFSNodes/blob/feat/h3-native-temporal/H3_NATIVE_TEMPORAL.md). This is an experimental consumer with CPU parity/routing coverage; full ComfyUI GPU generation remains pending local validation.
+
+For the compile-free inference implementation and illustrated derivation, see [Flash Partitions](https://github.com/alisson-anjos/ComfyUI-BFSNodes/blob/feat/h3-native-temporal/docs/H3_FLASH_PARTITIONS.md). It preserves the bounded temporal score policy through native FlashAttention partitions and log-sum-exp merging; this does not change the active training backend or claim improved identity retention.
