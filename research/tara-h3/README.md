@@ -1,6 +1,6 @@
 # TARA-H3: Temporally Aligned Reference Attention for Native Video Conditioning
 
-**Alisson Anjos** · Technical report v0.1.0 · October 23, 2026  
+**Alisson Anjos** · Technical report v0.1.1 · October 23, 2026  
 **Status:** experimental implementation and preliminary evidence; not peer reviewed.
 
 ## Abstract
@@ -113,7 +113,7 @@ Shape-dependent compilation and the resulting runtime were problematic in some l
 Partition the keys into disjoint groups, evaluate attention on each group with its applicable bias, and combine the partial outputs using their log-sum-exp normalizers. If group g returns output o_g and log normalizer l_g, then:
 
 $$
-o=\sum_g\exp\left(l_g-\operatorname{LSE}(l_1,\ldots,l_G)\right)o_g.
+L=\log\left(\sum_{h=1}^{G}\exp(l_h)\right),\qquad o=\sum_g\exp(l_g-L)\,o_g.
 $$
 
 This is an **exact decomposition of the specified softmax attention in real arithmetic**, subject to floating-point implementation differences. Averaging partition outputs without these normalizers is not equivalent. Grouping motion keys by timestamp makes the temporal penalty constant within each relevant query-time/key-time group. This avoids a dense bias tensor and compilation of a new full attention graph, but introduces multiple calls and merge work.
@@ -220,8 +220,8 @@ This document is an openly available **technical report/software artifact**, not
   year = {2026},
   institution = {Independent research},
   type = {Technical report},
-  number = {v0.1.0},
-  url = {https://github.com/alisson-anjos/ai-toolkit/tree/tara-h3-v0.1.0/research/tara-h3},
+  number = {v0.1.1},
+  url = {https://github.com/alisson-anjos/ai-toolkit/tree/tara-h3-v0.1.1/research/tara-h3},
   note = {Experimental implementation; not peer reviewed}
 }
 ```
@@ -237,4 +237,5 @@ This document is an openly available **technical report/software artifact**, not
 
 ## Version history
 
+- **v0.1.1 — 2026-10-23:** Replace the unsupported math-renderer macro in Section 3.2 with an explicit log-sum-exp definition; numerical method unchanged. Clarify the inherited spatial RoPE normalization.
 - **v0.1.0 — 2026-10-23:** Initial implementation-oriented report, equations, diagrams, numerical evidence, isolated timing data, reproduction pointers, and limitations.
