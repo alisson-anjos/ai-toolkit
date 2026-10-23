@@ -52,7 +52,7 @@ $$
 
 Only this temporal coordinate is changed. Reference-image coordinates and the motion video's native spatial grid are preserved. The implementation checks that motion and target use matching temporal grids after this translation. It rejects mismatches rather than silently stretching one performance to a different duration.
 
-A spatially downscaled motion reference can therefore accompany a larger output grid. Temporal alignment does not imply pixel-to-pixel spatial correspondence. Reducing guide resolution can discard small gestures, mouth movement, or other useful detail.
+H3 already area-normalizes the native spatial grids; this spatial normalization is inherited, not introduced by TARA-H3. A spatially downscaled motion reference can therefore accompany a larger output grid. Temporal alignment does not imply pixel-to-pixel spatial correspondence. Reducing guide resolution can discard small gestures, mouth movement, or other useful detail.
 
 ### 2.3 Selective bounded temporal bias
 
