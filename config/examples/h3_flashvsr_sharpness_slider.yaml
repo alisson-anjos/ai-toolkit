@@ -1,0 +1,127 @@
+job: extension
+config:
+  name: h3_flashvsr_sharpness_slider_r2_pilot
+  process:
+  - type: h3_restoration_slider
+    training_folder: /data/ai-toolkit-h3-lg/output
+    sqlite_db_path: ./aitk_db.db
+    device: cuda
+    performance_log_every: 10
+    trigger_word: null
+    network:
+      type: lora
+      linear: 2
+      linear_alpha: 2
+      network_kwargs:
+        only_if_contains:
+        - blocks.40.mlp.
+        - blocks.41.mlp.
+        - blocks.42.mlp.
+        - blocks.43.mlp.
+        - blocks.44.mlp.
+        - blocks.45.mlp.
+        - blocks.46.mlp.
+        - blocks.47.mlp.
+        - blocks.48.mlp.
+        - blocks.49.mlp.
+    save:
+      dtype: bf16
+      save_every: 50
+      max_step_saves_to_keep: 3
+      save_format: diffusers
+      push_to_hub: false
+    datasets:
+    - folder_path: /data/datasets/openjutsu/flashvsr_sharpness_pilot/train/targets
+      control_path:
+      - /data/datasets/openjutsu/flashvsr_sharpness_pilot/train/guides
+      caption_ext: txt
+      caption_dropout_rate: 0.0
+      cache_text_embeddings: true
+      cache_latents_to_disk: true
+      resolution:
+      - 512
+      auto_frame_count: true
+      num_frames: 56
+      fps: 16
+      do_audio: false
+      flip_x: false
+      random_crop: false
+      trim_auto_frame_count_tail: true
+    train:
+      batch_size: 1
+      steps: 250
+      gradient_accumulation: 1
+      train_unet: true
+      train_text_encoder: false
+      gradient_checkpointing: true
+      noise_scheduler: flowmatch
+      optimizer: adamw
+      lr: 0.0001
+      optimizer_params:
+        weight_decay: 0.0001
+      timestep_type: shift
+      content_or_style: balanced
+      cache_text_embeddings: true
+      unload_text_encoder: false
+      dtype: bf16
+      loss_type: mse
+      do_guidance_loss: false
+      guidance_loss_target: 3.5
+      audio_loss_multiplier: 1
+      skip_first_sample: true
+      force_first_sample: false
+      disable_sampling: true
+      ema_config:
+        use_ema: false
+        ema_decay: 0.99
+      start_step: 0
+      min_denoising_steps: 50
+      max_denoising_steps: 500
+    logging:
+      log_every: 1
+      use_ui_logger: true
+    model:
+      name_or_path: /data/models/minimax-h3
+      arch: minimax_h3_ref2va
+      quantize: true
+      qtype: convrot8
+      quantize_te: true
+      qtype_te: convrot8
+      low_vram: false
+      compile: false
+      layer_offloading: false
+      assistant_lora_path: /data/models/minimax-h3/training_adapters/minimax_h3_ref2va_training_adapter_v2.safetensors
+      model_kwargs:
+        partition: ref2va_pruned
+        align_video_refs: true
+        align_image_refs: false
+        guide_latent_only: true
+        control_latent_only: false
+        reference_downscale_factor: 1
+        dit_ref2va_pruned_path: /data/models/minimax-h3/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors
+        text_encoder_path: /data/models/minimax-h3/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors
+        video_vae_path: /data/models/minimax-h3/video_vae_fp16.safetensors
+        audio_vae_path: /data/models/minimax-h3/audio_vae_fp32.safetensors
+        sample_audio: false
+        guide_rope_layout: overlap
+        reference_rope_layout: native
+        reference_source_phase: false
+        auxiliary_losses: []
+        auxiliary_loss_max_sigma: 0.75
+        auxiliary_loss_latent_frames: 2
+        auxiliary_loss_sample_frames: 2
+        guide_keep_aspect: true
+        native_temporal_alignment: false
+    name: kagemane_h3_anything_swap_vfx_v1
+    meta:
+      name: kagemane_h3_anything_swap_vfx_v1
+    slider:
+      min_scale: 0.25
+      residual_cap: 1.0
+      anchor_probability: 0.1
+  meta:
+    name: kagemane_h3_anything_swap_vfx_v1
+    version: '1.0'
+meta:
+  name: kagemane_h3_anything_swap_vfx_v1
+  version: '1.0'
