@@ -1,0 +1,38 @@
+{
+  "torch": "2.12.0+cu130",
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+  "conditions": "Concurrent training; isolated attention; one warmup + one timed evaluation per implementation; no end-to-end speed claim",
+  "rows": [
+    {
+      "shape": [
+        1,
+        2,
+        42836,
+        128
+      ],
+      "seconds": {
+        "flash_partitions": 0.01711059600347653,
+        "kitchen_framewise": 0.10465262399520725,
+        "kitchen_onepass": 0.011890062014572322,
+        "sol_framewise": 0.15987364604370669,
+        "sol_onepass": 0.01116465002996847
+      }
+    },
+    {
+      "shape": [
+        1,
+        56,
+        42836,
+        128
+      ],
+      "seconds": {
+        "flash_partitions": 0.42317933501908556,
+        "kitchen_framewise": 0.5413047629990615,
+        "kitchen_onepass": 0.24634322000201792,
+        "sol_framewise": 2.675203786988277,
+        "sol_onepass": 0.21625870000571012
+      }
+    }
+  ],
+  "status": "passed"
+}

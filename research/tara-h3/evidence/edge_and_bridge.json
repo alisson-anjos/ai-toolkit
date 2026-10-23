@@ -1,0 +1,38 @@
+{
+  "cases": [
+    {
+      "strength": 10.0,
+      "cap": 0.01,
+      "window": 0.2,
+      "dense_error": 0.015495287254452705,
+      "sol_exact_error": 0.013426524586975574
+    },
+    {
+      "strength": 0.1,
+      "cap": 30.0,
+      "window": 0.2,
+      "dense_error": 0.015566659159958363,
+      "sol_exact_error": 0.013471982441842556
+    },
+    {
+      "strength": 0.0,
+      "cap": 6.0,
+      "window": 0.0,
+      "dense_error": 0.015584140084683895,
+      "sol_exact_error": 0.01359549630433321
+    },
+    {
+      "strength": 2.0,
+      "cap": 0.0,
+      "window": 0.2,
+      "dense_error": 0.015431488864123821,
+      "sol_exact_error": 0.01330660656094551
+    }
+  ],
+  "bridge_native_calls": {
+    "dense": 1,
+    "sol": 1
+  },
+  "stream_isolation": "passed",
+  "status": "passed"
+}

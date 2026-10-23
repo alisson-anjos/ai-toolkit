@@ -1,0 +1,59 @@
+{
+  "torch": "2.12.0+cu130",
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+  "cases": [
+    {
+      "dtype": "torch.bfloat16",
+      "shape": [
+        1,
+        2,
+        53,
+        128
+      ],
+      "dense_vs_fp32": 0.012292885221540928,
+      "sol_exact_vs_fp32": 0.011282283812761307,
+      "sol_onepass_vs_framewise": 0.0,
+      "finite": true
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "shape": [
+        1,
+        2,
+        1253,
+        128
+      ],
+      "dense_vs_fp32": 0.015596109442412853,
+      "sol_exact_vs_fp32": 0.013514556922018528,
+      "sol_onepass_vs_framewise": 2.1619540348183364e-05,
+      "finite": true
+    },
+    {
+      "dtype": "torch.float16",
+      "shape": [
+        1,
+        2,
+        53,
+        128
+      ],
+      "dense_vs_fp32": 0.013024155050516129,
+      "sol_exact_vs_fp32": 0.011345107108354568,
+      "sol_onepass_vs_framewise": 0.0,
+      "finite": true
+    },
+    {
+      "dtype": "torch.float16",
+      "shape": [
+        1,
+        2,
+        1253,
+        128
+      ],
+      "dense_vs_fp32": 0.015380656346678734,
+      "sol_exact_vs_fp32": 0.013211732730269432,
+      "sol_onepass_vs_framewise": 5.5366094784403685e-06,
+      "finite": true
+    }
+  ],
+  "status": "passed"
+}

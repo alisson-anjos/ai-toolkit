@@ -1,3 +1,5 @@
+> **Method and citation:** [TARA-H3 technical report](../research/tara-h3/README.md). The run description below records the original experiment setup; it is not a live training-status page.
+
 # H3 native temporal motion transfer v1
 
 Fresh rank-64/alpha-64 LoRA on the H3 base Ref2VA model, with the usual frozen V2 training adapter. No motion-transfer or VFX LoRA weights or optimizer are inherited. Target: 3000 steps, checkpoints every 250. Swap is paused at its saved 250 checkpoint and optimizer.
