@@ -987,6 +987,9 @@ class DatasetConfig:
         self.augments: List[str] = kwargs.get('augments', [])
         self.control_path: Union[str,List[str]] = kwargs.get('control_path', None)  # depth maps, etc
         # pull a random control image from the same folder as the image. Useful for folder grouped pairs.
+        self.source_person_path = kwargs.get('source_person_path', None)
+        if self.source_person_path and not kwargs.get('cache_text_embeddings', False):
+            raise ValueError('source_person_path requires cache_text_embeddings: true')
         self.control_from_same_folder: bool = kwargs.get('control_from_same_folder', False)
         self.num_controls_from_same_folder: int = kwargs.get('num_controls_from_same_folder', 1)
         

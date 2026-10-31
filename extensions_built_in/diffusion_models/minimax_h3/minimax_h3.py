@@ -857,6 +857,13 @@ class MinimaxH3Model(BaseModel):
     # ------------------------------------------------------------------
     # Training forward
     # ------------------------------------------------------------------
+    def prepare_source_person_context(self, path):
+        if not self.model_config.model_kwargs.get('molmo_projection_path') or not self.model_config.model_kwargs.get('molmo_phase_b_vision', True):
+            raise ValueError('Source-person photo context requires the Molmo visual encoder')
+        from toolkit.source_person import SourcePersonRef
+        with Image.open(path) as image:
+            return SourcePersonRef(image.convert('RGB'))
+
     def _text_control_images(self, controls):
         """Keep native image references while optionally removing video guides from the VLM."""
         if getattr(self, "control_latent_only", False):
