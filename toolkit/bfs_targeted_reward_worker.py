@@ -8,6 +8,33 @@ from pathlib import Path
 import numpy as np
 
 
+def training_reward(grade):
+    """Shape sparse visual judgments so early no-swap rollouts can teach target selection.
+
+    A fully correct swap keeps the evaluator's strict reward. A no-swap result gets
+    a small target-grounding score, while a wrong-person swap is penalized. This
+    keeps selection signal separate from replacement progress without rewarding a
+    successful-looking edit on the wrong person.
+    """
+    confidence = float(grade.get('confidence', 0.0))
+    if confidence < 0.7 or grade.get('verdict') == 'uncertain':
+        return 0.0
+    selection = float(grade.get('target_selection', 0.0))
+    replacement = float(grade.get('replacement_identity', 0.0))
+    preservation = min(float(grade.get(k, 0.0)) for k in
+                       ('other_people_preserved', 'scene_motion_preserved', 'temporal_consistency'))
+    verdict = grade.get('verdict')
+    if verdict == 'correct':
+        return float(grade.get('reward_0_to_10') or 0.0)
+    if verdict == 'wrong_target':
+        return round(-2.0 * (1.0 - selection), 4)
+    if verdict == 'no_swap':
+        return round(2.5 * selection * preservation, 4)
+    if verdict == 'mixed':
+        return round(5.0 * selection * (0.25 + 0.75 * replacement) * preservation, 4)
+    return 0.0
+
+
 def write_video(path,frames,fps):
  frames=np.ascontiguousarray(frames,dtype=np.uint8)
  if frames.ndim!=4 or frames.shape[-1]!=3:raise ValueError('Expected F,H,W,3 RGB frames')
@@ -37,8 +64,10 @@ def main():
     proc=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=240)
     if proc.returncode:raise RuntimeError('Target judge failed; see evaluator status (no reward assigned)')
     grade=json.loads((out/'grade.json').read_text());grades.append(grade)
-    # Uncertain examples cannot become positive examples through normalization.
-    scores.append(grade['reward_0_to_10'] if grade['reward_0_to_10'] is not None else 0.)
+    score = training_reward(grade)
+    grade['training_reward'] = score
+    (out/'grade.json').write_text(json.dumps(grade, indent=2))
+    scores.append(score)
    print(json.dumps({'gpt_id':scores,'target_judge_confidence':[x['confidence'] for x in grades]}),flush=True)
   except Exception as exc:
    print(json.dumps({'error':type(exc).__name__+': '+str(exc)[:160]}),flush=True)

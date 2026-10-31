@@ -25,7 +25,7 @@ config:
       pretrained_lora_path: /workspace/checkpoints/source_photo_pilot_delta.safetensors
     save:
       dtype: bf16
-      save_every: 1
+      save_every: 25
       max_step_saves_to_keep: 3
     datasets:
     - folder_path: /workspace/datasets/targeted_rl/targets
@@ -54,7 +54,7 @@ config:
       pin_memory: false
     train:
       batch_size: 1
-      steps: 50
+      steps: 500
       gradient_accumulation: 1
       train_unet: true
       train_text_encoder: false
@@ -89,7 +89,7 @@ config:
           pose: 0.0
           lips: 0.0
           gpt_id: 1.0
-        reward_python: ''
+        reward_python: /usr/bin/python3
         reward_worker: bfs_targeted_reward_worker.py
         judge_context_root: /workspace/datasets/targeted_rl/judge_context
         judge_gate: 0.1
