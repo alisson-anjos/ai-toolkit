@@ -31,6 +31,7 @@ spec.loader.exec_module(packing)
 
 
 def source_function(path, name, namespace, class_name=None):
+    namespace.setdefault('native_temporal', native_temporal)
     tree = ast.parse(Path(path).read_text())
     body = tree.body
     if class_name:

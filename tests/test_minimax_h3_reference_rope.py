@@ -102,6 +102,8 @@ def test_actual_validation_pipeline_forwards_geometry_and_source_channels():
         _aligned_ref_flags=lambda blocks:tuple(bool(b[4]) for b in blocks),
         _reference_downscale_factor=lambda:4,
         _guide_keep_aspect=lambda:False,
+        native_temporal_options={'enabled':False},
+        _pdd_weights=lambda sv,sv_next=None:None,
         decode_latents=lambda z:torch.zeros(1,3,1,128,128))
     ns=dict(torch=torch,np=np,Image=Image,Optional=Optional,packing=packing,
         randn_tensor=randn_tensor,options_from_kwargs=options_from_kwargs,

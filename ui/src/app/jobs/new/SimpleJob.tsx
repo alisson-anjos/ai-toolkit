@@ -754,6 +754,7 @@ export default function SimpleJob({
                     { value: 'automagic', label: 'Automagic' },
                     { value: 'automagic2', label: 'Automagic v2' },
                     { value: 'automagic3', label: 'Automagic v3' },
+                    { value: 'automagic4', label: 'Automagic v4' },
                     { value: 'prodigyopt', label: 'Prodigy' },
                     { value: 'prodigy8bit', label: 'Prodigy8Bit' },
                   ]}
@@ -1165,6 +1166,17 @@ export default function SimpleJob({
                       />
                     </>
                   )}
+                </div>
+                <div>
+                  <Checkbox
+                    label="Pool Datasets"
+                    docKey={'train.pool_datasets'}
+                    className="pt-1"
+                    checked={jobConfig.config.process[0].train.pool_datasets || false}
+                    onChange={value => {
+                      setJobConfig(value ? true : undefined, 'config.process[0].train.pool_datasets');
+                    }}
+                  />
                 </div>
               </div>
             </Card>
