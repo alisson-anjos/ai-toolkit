@@ -39,7 +39,7 @@ config:
       resolution:
       - 384
       buckets: true
-      num_frames: 49
+      num_frames: 39
       fps: 24
       shrink_video_to_frames: true
       flip_x: false

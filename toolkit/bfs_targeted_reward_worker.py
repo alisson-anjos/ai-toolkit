@@ -29,6 +29,8 @@ def main():
     calls+=1;out=report_root/f'{calls:05d}';out.mkdir(exist_ok=True)
     video=out/'generated.mp4';write_video(video,frames,ctx.get('fps',24))
     spec={**ctx,'generated':str(video)}
+    duration=(len(frames)-1)/ctx.get('fps',24)
+    spec['times']=[round(duration*f,4) for f in (.2,.5,.8)]
     manifest=out/'manifest.json';manifest.write_text(json.dumps(spec))
     cmd=[sys.executable,str(Path(__file__).with_name('bfs_targeted_judge.py')),'--manifest',str(manifest),'--out',str(out),'--model',os.environ['OPENAI_JUDGE_MODEL']]
     if os.environ.get('BFS_JUDGE_KEY_FILE'):cmd+=['--key-file',os.environ['BFS_JUDGE_KEY_FILE']]
