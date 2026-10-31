@@ -1,0 +1,117 @@
+job: extension
+config:
+  name: minimax_h3_molmo2_mocha_selective_swap_v1
+  process:
+  - type: sd_trainer
+    training_folder: /workspace/ai-toolkit/output
+    device: cuda:0
+    network:
+      type: lora
+      linear: 32
+      linear_alpha: 32
+      network_kwargs:
+        ignore_if_contains:
+        - audio_model
+        - connectors
+        - video_to_audio_attn
+        - audio_to_video_attn
+        - patchify_proj
+        - proj_out
+        - scale_shift_table
+        - prompt_scale_shift_table
+        - norm_q
+        - norm_k
+        - audio_
+    save:
+      dtype: bf16
+      save_every: 25
+      max_step_saves_to_keep: 20
+    datasets:
+    - folder_path: /workspace/ai-toolkit/datasets/phase_b_mocha_selective/refs_1/targets
+      control_path:
+      - /workspace/ai-toolkit/datasets/phase_b_mocha_selective/refs_1/control_0
+      - /workspace/ai-toolkit/datasets/phase_b_mocha_selective/refs_1/control_1
+      control_role_1: guide
+      control_role_2: reference
+      caption_ext: txt
+      caption_dropout_rate: 0.0
+      resolution:
+      - 384
+      buckets: true
+      num_frames: 56
+      fps: 24
+      shrink_video_to_frames: true
+      flip_x: false
+      flip_y: false
+      cache_latents_to_disk: true
+      cache_text_embeddings: true
+      num_repeats: 1
+    - folder_path: /workspace/ai-toolkit/datasets/phase_b_mocha_selective/refs_2/targets
+      control_path:
+      - /workspace/ai-toolkit/datasets/phase_b_mocha_selective/refs_2/control_0
+      - /workspace/ai-toolkit/datasets/phase_b_mocha_selective/refs_2/control_1
+      - /workspace/ai-toolkit/datasets/phase_b_mocha_selective/refs_2/control_2
+      control_role_1: guide
+      control_role_2: reference
+      control_role_3: reference
+      caption_ext: txt
+      caption_dropout_rate: 0.0
+      resolution:
+      - 384
+      buckets: true
+      num_frames: 56
+      fps: 24
+      shrink_video_to_frames: true
+      flip_x: false
+      flip_y: false
+      cache_latents_to_disk: true
+      cache_text_embeddings: true
+      num_repeats: 2
+    train:
+      batch_size: 1
+      steps: 1000
+      gradient_accumulation: 2
+      train_unet: true
+      train_text_encoder: false
+      gradient_checkpointing: true
+      noise_scheduler: flowmatch
+      timestep_type: shift
+      optimizer: adamw8bit
+      lr: 1.0e-04
+      lr_scheduler: cosine
+      dtype: bf16
+      cache_text_embeddings: true
+      unload_text_encoder: true
+      disable_sampling: true
+      blank_prompt_preservation: false
+    model:
+      name_or_path: Comfy-Org/MiniMax-H3
+      arch: minimax_h3_ref2va
+      assistant_lora_path: /workspace/henge/models/loras/henge/minimax_h3_ref2va_training_adapter_v2.safetensors
+      quantize: true
+      qtype: convrot8
+      quantize_te: false
+      low_vram: true
+      layer_offloading: true
+      layer_offloading_transformer_percent: 0.85
+      layer_offloading_text_encoder_percent: 0.0
+      model_kwargs:
+        partition: ref2va_pruned
+        dit_ref2va_pruned_path: /workspace/henge/models/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors
+        video_vae_path: /workspace/henge/models/vae/minimax_h3_video_vae_fp16.safetensors
+        frozen_base_lora_path: /workspace/henge/models/loras/henge/minimax_h3_character_swap_v1.1_ref2va_fro.safetensors
+        align_video_refs: true
+        guide_latent_only: false
+        guide_rope_layout: overlap
+        reference_rope_layout: native
+        molmo_model_path: /workspace/mh3/models/Molmo2-8B
+        molmo_projection_path: /workspace/henge/models/clip_projections/molmo2-8b-h3-tap24-phaseb-pilot.safetensors
+        molmo_python_path: /opt/molmo/bin/python
+        molmo_phase_b_vision: true
+        molmo_max_video_frames: 8
+    sample:
+      sample_every: 100000
+      samples: []
+meta:
+  name: minimax_h3_molmo2_mocha_selective_swap_v1
+  version: '1.0'

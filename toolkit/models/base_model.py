@@ -1574,6 +1574,16 @@ class BaseModel:
         self.device_state = None
 
     def set_device_state(self, state):
+        # Offload modules moving to CPU first so their VRAM is freed before
+        # other modules (e.g. VAE after text_encoder caching) move onto CUDA.
+        if self.text_encoder is not None and not isinstance(self.text_encoder, list):
+            if str(state.get('text_encoder', {}).get('device', '')) == 'cpu':
+                self.text_encoder.to('cpu')
+                flush()
+        if self.vae is not None and state.get('vae') is not None:
+            if str(state['vae'].get('device', '')) == 'cpu':
+                self.vae.to('cpu')
+                flush()
         if self.vae is not None and state.get('vae') is not None:
             if state['vae']['training']:
                 self.vae.train()

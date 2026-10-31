@@ -2666,6 +2666,9 @@ class TextEmbeddingCachingMixin:
                             del prompt_embeds
                 file_item.is_text_embedding_cached = True
                 i += 1
+            if did_move and hasattr(self.sd, 'text_encoder') and hasattr(self.sd.text_encoder, 'unload_worker'):
+                self.sd.text_encoder.unload_worker()
+                flush()
             # restore device state
             # if did_move:
             #     self.sd.restore_device_state()

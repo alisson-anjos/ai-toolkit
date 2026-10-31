@@ -348,9 +348,10 @@ class MinimaxH3Model(BaseModel):
         lora_state_dict = self.convert_lora_weights_before_load(lora_state_dict)
 
         adapter_kwargs = {}
-        if adapter_name == "nft_turbo_lora":
-            # DMAD has per-layer ranks (2..128). A fixed-rank loader silently
-            # truncates higher ranks, so build each frozen module at its exact rank.
+        if adapter_name in ("nft_turbo_lora", "frozen_base_lora"):
+            # DMAD and Frobenius-compressed base LoRAs have per-layer ranks (e.g. 2..128).
+            # A fixed-rank loader silently truncates or mismatches ranks, so build each
+            # frozen module at its exact rank.
             dims, alphas = {}, {}
             for key, value in lora_state_dict.items():
                 if key.endswith(".lora_A.weight"):
@@ -361,7 +362,7 @@ class MinimaxH3Model(BaseModel):
                     alpha = lora_state_dict.get(prefix + ".alpha")
                     alphas[name] = float(alpha) if alpha is not None else rank
             if not dims:
-                raise ValueError("Turbo adapter has no PEFT lora_A weights")
+                raise ValueError(f"{adapter_name} has no PEFT lora_A weights")
             adapter_kwargs = {"modules_dim": dims, "modules_alpha": alphas}
 
         network_config = NetworkConfig(
@@ -423,6 +424,37 @@ class MinimaxH3Model(BaseModel):
         return MiniMaxH3Transformer.load_model(dit_path, dtype=self.torch_dtype)
 
     def _load_text_encoder(self):
+        molmo_proj = self.model_config.model_kwargs.get("molmo_projection_path", None)
+        if molmo_proj:
+            from .src.molmo_text_encoder import MolmoH3TextEncoder
+
+            molmo_model = self.model_config.model_kwargs.get(
+                "molmo_model_path", os.environ.get("HENGE_MOLMO_MODEL", "")
+            )
+            molmo_python = self.model_config.model_kwargs.get(
+                "molmo_python_path", os.environ.get("HENGE_MOLMO_PYTHON", None)
+            )
+            phase_b_vision = bool(
+                self.model_config.model_kwargs.get("molmo_phase_b_vision", True)
+            )
+            max_video_frames = int(
+                self.model_config.model_kwargs.get("molmo_max_video_frames", 8)
+            )
+            self.print_and_status_update(
+                f"Loading Molmo2-8B + H3 projection from {molmo_proj} (vision={phase_b_vision})"
+            )
+            text_encoder = MolmoH3TextEncoder(
+                molmo_model_path=molmo_model,
+                molmo_projection_path=molmo_proj,
+                molmo_python_path=molmo_python,
+                phase_b_vision=phase_b_vision,
+                max_video_frames=max_video_frames,
+            )
+            text_encoder.eval()
+            text_encoder.requires_grad_(False)
+            flush()
+            return text_encoder.tokenizer, None, text_encoder
+
         from accelerate import init_empty_weights
         from transformers import (
             AutoConfig,
@@ -661,22 +693,40 @@ class MinimaxH3Model(BaseModel):
         for p, keyframes in zip(prompt, keyframes_per_prompt):
             if keyframes and getattr(self, 'native_temporal_options', {}).get('enabled', False):
                 keyframes = native_temporal.reference_order(keyframes, lambda item: isinstance(item, VideoRef))
-            embeds, tags = encode_minimax_h3_prompt(
-                self.text_encoder,
-                self.tokenizer,
-                self.processor,
-                p.strip(),
-                keyframes=keyframes,
-                device=self.device_torch,
-                dtype=self.torch_dtype,
-                max_length=self.max_text_length,
-            )
+            if hasattr(self.text_encoder, "encode_prompt"):
+                embeds, tags = self.text_encoder.encode_prompt(
+                    p.strip(),
+                    keyframes=keyframes,
+                    device=self.device_torch,
+                    dtype=self.torch_dtype,
+                    max_length=self.max_text_length,
+                )
+            else:
+                embeds, tags = encode_minimax_h3_prompt(
+                    self.text_encoder,
+                    self.tokenizer,
+                    self.processor,
+                    p.strip(),
+                    keyframes=keyframes,
+                    device=self.device_torch,
+                    dtype=self.torch_dtype,
+                    max_length=self.max_text_length,
+                )
             embeds_list.append(embeds)
             tags_list.append(tags)
 
         pe = AdvancedPromptEmbeds(text_embeds=embeds_list, text_token_tags=tags_list)
         pe.frozen_dtype_keys = ["text_token_tags"]
         return pe
+
+    @property
+    def text_embedding_space_version(self):
+        molmo_proj = self.model_config.model_kwargs.get("molmo_projection_path", None)
+        if molmo_proj:
+            base = os.path.splitext(os.path.basename(str(molmo_proj)))[0]
+            vis = "vis" if self.model_config.model_kwargs.get("molmo_phase_b_vision", True) else "txt"
+            return f"minimax_h3_molmo_{base}_{vis}"
+        return self.get_base_model_version()
 
     # ------------------------------------------------------------------
     # VAE encode / decode
