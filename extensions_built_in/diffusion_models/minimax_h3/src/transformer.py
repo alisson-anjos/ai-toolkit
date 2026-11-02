@@ -35,6 +35,8 @@ from toolkit.models.v2._mixin import OstrisModelMixin
 import torch
 import torch.nn.functional as F
 from torch import nn
+
+from toolkit import h3_native_temporal as native_temporal
 from torch.utils.checkpoint import checkpoint
 
 MODALITY_NUM = 3  # 0 = video, 1 = text, 2 = audio; -1 marks padding rows
@@ -202,7 +204,11 @@ class MiniMaxH3Attention(nn.Module):
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        if isinstance(attn_mask, native_temporal.TemporalContext):
+            # TARA: soft temporal bias on generated-video -> motion-video edges
+            out = native_temporal.attention(q, k, v, attn_mask)
+        else:
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         out = out.transpose(1, 2).reshape(b, s, -1)
         return self.out_proj(out)
 
@@ -541,6 +547,9 @@ class MiniMaxH3Transformer(nn.Module, OstrisModelMixin):
         # PDD checkpoints only: per-sample (video, audio) head weights, each
         # (B, pdd_steps), from packing.build_pdd_weights
         pdd_weights: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        # TARA (toolkit/h3_native_temporal.py): (B, S) motion-video rows and options
+        native_motion_mask: Optional[torch.Tensor] = None,
+        native_temporal_options: Optional[dict] = None,
     ):
         """Returns (video_out (B, Nv, 96), audio_out (B, Na, 32)) — the
         data-ward velocity ``clean - noise`` for every row, in input order.
@@ -603,6 +612,15 @@ class MiniMaxH3Transformer(nn.Module, OstrisModelMixin):
                     device=x.device,
                 )
             )
+
+        temporal_ctx = native_temporal.context(
+            position_ids, native_motion_mask, token_tags, video_indices,
+            vsa_video_grid, native_temporal_options,
+        )
+        if temporal_ctx is not None:
+            if vsa_ctx is not None:
+                raise ValueError("TARA cannot be combined with the trained VSA sparse policy")
+            attn_mask = temporal_ctx
 
         for block in self.blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:

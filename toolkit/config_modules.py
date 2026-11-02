@@ -979,9 +979,11 @@ class DatasetConfig:
             self.control_path = None
         
         # handle multi control inputs from the ui. It is just easier to handle it here for a cleaner ui experience
-        control_path_1 = kwargs.get('control_path_1', None)
-        control_path_2 = kwargs.get('control_path_2', None)
-        control_path_3 = kwargs.get('control_path_3', None)
+        # kept on the config: a control file's channel number (1..3) can matter
+        # to the model, e.g. MiniMax H3 TARA's motion channel
+        self.control_path_1 = control_path_1 = kwargs.get('control_path_1', None)
+        self.control_path_2 = control_path_2 = kwargs.get('control_path_2', None)
+        self.control_path_3 = control_path_3 = kwargs.get('control_path_3', None)
         
         if any([control_path_1, control_path_2, control_path_3]):
             control_paths = []

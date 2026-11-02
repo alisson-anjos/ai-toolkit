@@ -45,6 +45,7 @@ import yaml
 from PIL import Image
 from safetensors.torch import load_file, save_file
 
+from toolkit import h3_native_temporal as native_temporal
 from toolkit.accelerator import unwrap_model
 from toolkit.advanced_prompt_embeds import AdvancedPromptEmbeds
 from toolkit.basic import flush
@@ -220,6 +221,12 @@ class MinimaxH3Model(BaseModel):
         self._ref_video_dataset_config = None
         self._sample_ref_max_frames = None
         self.latent_space_version = "minimax_h3_v1"
+        # TARA: native motion-video reference on the target clock + temporal
+        # attention bias (toolkit/h3_native_temporal.py); off unless enabled
+        self.native_temporal_options = native_temporal.options(self.model_config.model_kwargs)
+        # control channel of each reference block of the current batch, in
+        # packing order (set by Ref2VA's _build_condition)
+        self._condition_source_ids = ()
         # caption token cap (vision blocks are never truncated); the released
         # stack has no limit — set 0 to disable
         self.max_text_length = int(
@@ -657,6 +664,8 @@ class MinimaxH3Model(BaseModel):
 
         embeds_list, tags_list = [], []
         for p, keyframes in zip(prompt, keyframes_per_prompt):
+            if keyframes and self.native_temporal_options["enabled"]:
+                keyframes = native_temporal.reference_order(keyframes, lambda item: isinstance(item, VideoRef))
             embeds, tags = encode_minimax_h3_prompt(
                 self.text_encoder,
                 self.tokenizer,
@@ -956,6 +965,13 @@ class MinimaxH3Model(BaseModel):
                         ref_blocks=ref_blocks,
                     )
                 )
+            motion_masks = None
+            if self.native_temporal_options["enabled"]:
+                motion_masks = native_temporal.pad_motion_masks(layouts, [
+                    native_temporal.align_layout(layout, ref_blocks, self._condition_source_ids,
+                                                 self.native_temporal_options)
+                    for layout in layouts
+                ])
             (
                 position_ids,
                 token_tags,
@@ -1011,6 +1027,8 @@ class MinimaxH3Model(BaseModel):
             # target-video token grid (patch 1x2x2); consumed only by VSA models
             vsa_video_grid=(t_lat, h_lat // 2, w_lat // 2),
             pdd_weights=self._pdd_weights(sigma_v),
+            native_motion_mask=motion_masks.to(device) if motion_masks is not None else None,
+            native_temporal_options=self.native_temporal_options,
         )
 
         if num_cond_audio > 0:
@@ -1247,6 +1265,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
     ):
         # raw-size control tensors in [0, 1]; each is resized to the TARGET's
         # pixel area with its own aspect kept, then encoded on its own grid
+        self._condition_source_ids = ()
         if batch is None:
             return None, None, (), ()
         if getattr(batch, "dopsd_teacher_pass", False):
@@ -1331,8 +1350,31 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         )
         if not all_rows:
             return None, None, (), ()
+        if self.native_temporal_options["enabled"]:
+            # packing order: pictures, then videos
+            self._condition_source_ids = tuple(
+                self._batch_source_ids(batch, "control_image_source_ids", ref_count)
+                + self._batch_source_ids(batch, "control_video_source_ids", len(blocks) - ref_count)
+            )
         cond_audio = torch.cat(audio_rows, dim=1) if audio_rows else None
         return torch.cat(all_rows, dim=1), cond_audio, (), tuple(blocks)
+
+    @staticmethod
+    def _batch_source_ids(batch, name, count):
+        """Control channel of each reference; identical across the batch."""
+        if count == 0:
+            return []
+        per_item = [list(getattr(item, name, None) or []) for item in batch.file_items]
+        if any(ids != per_item[0] for ids in per_item) or len(per_item[0]) != count:
+            raise ValueError("TARA: every item in a batch needs the same control channels "
+                             f"({name}: {per_item[0]} for {count} references)")
+        return per_item[0]
+
+    def get_additional_save_metadata(self):
+        """Stored in the LoRA so inference can reproduce the training policy."""
+        if not self.native_temporal_options["enabled"]:
+            return {}
+        return native_temporal.save_metadata(self.native_temporal_options)
 
     def _build_dopsd_teacher_condition(self, batch, latent_shape, device, dtype):
         """D-OPSD teacher: the target is its own (only) reference, built from
@@ -1496,9 +1538,11 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         for ref_idx in range(vid_count):
             lats = []
             auds = []
-            for per_item in paths_per_item:
+            for item_idx, per_item in enumerate(paths_per_item):
                 entry = load_ref_video_latent(
-                    self, per_item[ref_idx], batch.dataset_config, target_h, target_w
+                    self, per_item[ref_idx], batch.dataset_config, target_h, target_w,
+                    # TARA reads the motion video at the target item's own frames
+                    file_item=batch.file_items[item_idx] if batch.file_items else None,
                 )
                 lats.append(entry["latent"].to(device, torch.float32))
                 auds.append(entry.get("audio_rows"))
@@ -1573,14 +1617,24 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         # resized to the target's pixel area with their own aspect kept;
         # videos are dataset-style encoded into multi-frame latent blocks
         ref_images = []
-        for path in (
-            gen_config.ctrl_img,
-            gen_config.ctrl_img_1,
-            gen_config.ctrl_img_2,
-            gen_config.ctrl_img_3,
-        ):
-            if path is None:
-                continue
+        ref_source_ids = []
+        controls = [
+            (channel, path)
+            for channel, path in (
+                (1, gen_config.ctrl_img),
+                (1, gen_config.ctrl_img_1),
+                (2, gen_config.ctrl_img_2),
+                (3, gen_config.ctrl_img_3),
+            )
+            if path is not None
+        ]
+        if self.native_temporal_options["enabled"]:
+            # native H3 order (pictures, then videos), as in training and ComfyUI
+            controls = native_temporal.reference_order(
+                controls, lambda c: os.path.splitext(str(c[1]))[1].lower() in packing_video_exts
+            )
+        for channel, path in controls:
+            ref_source_ids.append(channel)
             if os.path.splitext(str(path))[1].lower() in packing_video_exts:
                 ref_images.append(
                     self._encode_ref_video_for_sampling(str(path), gen_config)
@@ -1612,6 +1666,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
             latents=gen_config.latents,
             generator=generator,
             ref_images=ref_images or None,
+            ref_source_ids=ref_source_ids,
             with_audio=with_audio and is_video,
         )
         if is_video:

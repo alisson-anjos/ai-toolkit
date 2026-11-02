@@ -26,6 +26,8 @@ import torch
 from PIL import Image
 from diffusers.utils.torch_utils import randn_tensor
 
+from toolkit import h3_native_temporal as native_temporal
+
 from . import packing
 from .text_encoder import trim_caption_tokens
 from .packing import (
@@ -123,8 +125,9 @@ class MiniMaxH3Pipeline:
             if isinstance(r, dict):
                 lat = r["latent"]
                 a = r.get("audio_rows")
-                a_lat = int(a.shape[0]) // 2 if a is not None else 0
-                ref_blocks.append((lat.shape[1], lat.shape[2], lat.shape[3], a_lat))
+                # the reference's own soundtrack length; a_lat stays the target's
+                ref_a_lat = int(a.shape[0]) // 2 if a is not None else 0
+                ref_blocks.append((lat.shape[1], lat.shape[2], lat.shape[3], ref_a_lat))
             elif isinstance(r, torch.Tensor):
                 ref_blocks.append((r.shape[1], r.shape[2], r.shape[3]))
             else:
@@ -138,6 +141,10 @@ class MiniMaxH3Pipeline:
             num_audio_latents=a_lat,
             keyframe_anchors=anchors,
             ref_blocks=ref_blocks,
+        )
+        temporal_options = getattr(model, "native_temporal_options", None) or {"enabled": False}
+        motion_mask = native_temporal.align_layout(
+            layout, ref_blocks, tuple(kwargs.get("ref_source_ids", ())), temporal_options
         )
         num_cond = layout.num_condition_video_rows
 
@@ -251,6 +258,8 @@ class MiniMaxH3Pipeline:
                 # target-video token grid (patch 1x2x2); consumed only by VSA models
                 vsa_video_grid=(t_lat, h_lat // 2, w_lat // 2),
                 pdd_weights=model._pdd_weights(sv, sv_next),
+                native_motion_mask=motion_mask[None].to(device) if temporal_options["enabled"] else None,
+                native_temporal_options=temporal_options,
             )
             v_video = video_pred[:, num_cond:].float()
             v_audio = audio_pred[:, layout.num_condition_audio_rows :].float()

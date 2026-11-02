@@ -164,17 +164,32 @@ def _cache_path(path: str, hash_dict: dict) -> str:
 
 @torch.no_grad()
 def load_ref_video_latent(
-    model, path: str, dataset_config, target_height: int, target_width: int
+    model, path: str, dataset_config, target_height: int, target_width: int,
+    file_item=None,
 ) -> dict:
     """Returns {"latent": (C, T, h, w) cpu tensor, "num_frames": int},
     encoding + disk-caching on first use. ``model`` is the MinimaxH3 model
-    (used for the VAE, audio encode and the frame-count snapper)."""
+    (used for the VAE, audio encode and the frame-count snapper).
+
+    With TARA (``native_temporal_alignment``) the reference video is read at
+    the TARGET item's own source frame indices (``file_item.video_frame_indices``),
+    so a random training window of the target gets the same window of the
+    motion video, frame for frame."""
+    temporal = bool(getattr(model, "native_temporal_options", {}).get("enabled", False))
+    target_indices = getattr(file_item, "video_frame_indices", None) if temporal else None
+    target_fps = getattr(file_item, "video_source_fps", None) if temporal else None
+    if temporal and not target_indices and not getattr(dataset_config, "shrink_video_to_frames", True) \
+            and not (dataset_config.auto_frame_count and dataset_config.trim_auto_frame_count_tail):
+        raise ValueError("TARA needs the target's frame indices for random video windows; "
+                         "re-cache the latents or use shrink_video_to_frames")
+    mem_key = (path, int(target_height or 0), int(target_width or 0),
+               tuple(target_indices) if target_indices else None, target_fps)
     mem_cache = getattr(model, "_ref_video_cache", None)
     if mem_cache is None:
         mem_cache = {}
         model._ref_video_cache = mem_cache
-    if path in mem_cache:
-        return mem_cache[path]
+    if mem_key in mem_cache:
+        return mem_cache[mem_key]
 
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
@@ -208,6 +223,9 @@ def load_ref_video_latent(
         "latent_space_version": model.latent_space_version,
         "is_ref_video": True,
     }
+    if target_indices:
+        hash_dict["target_frame_indices"] = list(target_indices)
+        hash_dict["target_source_fps"] = target_fps
     cache_file = _cache_path(path, hash_dict)
     if os.path.exists(cache_file):
         cap.release()
@@ -217,7 +235,7 @@ def load_ref_video_latent(
             "num_frames": int(sd["num_frames"].item()),
             "audio_rows": sd.get("audio_latent"),
         }
-        mem_cache[path] = entry
+        mem_cache[mem_key] = entry
         return entry
 
     # match the target's pixel area (the dataset bucket the target trains at)
@@ -228,6 +246,13 @@ def load_ref_video_latent(
     indices = ref_frame_indices(
         total, src_fps, num_frames, dataset_config.fps, trim_tail
     )
+    audio_start = 0.0
+    if target_indices:
+        # same moments as the target's frames, mapped through the two source rates
+        rate = src_fps / target_fps if target_fps and target_fps > 0 else 1.0
+        indices = [min(round(i * rate), total - 1) for i in target_indices]
+        num_frames = len(indices)
+        audio_start = indices[0] / src_fps
     try:
         raw_frames = read_frames_at(cap, indices)
     except ValueError as e:
@@ -262,7 +287,8 @@ def load_ref_video_latent(
             # frames cover [0, num_frames / fps) seconds; trim the soundtrack
             # to the same window so it stays in sync with the sampled frames
             keep = int(round(num_frames / dataset_config.fps * sample_rate))
-            waveform = waveform[:, :keep]
+            start = int(round(audio_start * sample_rate))
+            waveform = waveform[:, start:start + keep]
         audio_latent = model.encode_audio(
             [{"waveform": waveform, "sample_rate": sample_rate}]
         )[0]
@@ -274,5 +300,5 @@ def load_ref_video_latent(
     os.makedirs(os.path.dirname(cache_file), exist_ok=True)
     save_file(state_dict, cache_file)
     entry = {"latent": latent, "num_frames": num_frames, "audio_rows": audio_rows}
-    mem_cache[path] = entry
+    mem_cache[mem_key] = entry
     return entry

@@ -526,6 +526,10 @@ class BaseSDTrainProcess(BaseTrainProcess):
         file_path = os.path.join(self.save_root, filename)
 
         save_meta = copy.deepcopy(self.meta)
+        # model-specific settings a LoRA consumer must reproduce (e.g. MiniMax H3 TARA)
+        model_save_metadata = getattr(self.sd, 'get_additional_save_metadata', None)
+        if callable(model_save_metadata):
+            save_meta.update(model_save_metadata() or {})
         # get extra meta
         if self.adapter is not None and isinstance(self.adapter, CustomAdapter):
             additional_save_meta = self.adapter.get_additional_save_metadata()

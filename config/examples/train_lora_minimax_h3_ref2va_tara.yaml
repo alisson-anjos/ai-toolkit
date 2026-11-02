@@ -1,0 +1,89 @@
+# MiniMax H3 Ref2VA motion transfer with TARA (Temporally Aligned Reference Attention).
+# The motion video stays a native H3 reference; TARA puts it on the generated video's clock and
+# biases each generated moment toward the matching moment of the motion video. No new layers.
+# See docs/minimax_h3_tara.md.
+#
+# Dataset layout (same file name in every folder):
+#   targets/clip_001.mp4 + clip_001.txt   the video to learn (caption = prompt)
+#   motion/clip_001.mp4                   control channel 1: the motion (guide) video
+#   identity/clip_001.png                 control channel 2: an identity picture
+# The motion video and the target must cover the same moments: TARA reads the motion video at the
+# target's own source frames and rejects clips whose temporal grids differ.
+---
+job: extension
+config:
+  name: "minimax_h3_ref2va_tara_v1"
+  process:
+    - type: 'sd_trainer'
+      training_folder: "output"
+      device: cuda:0
+      network:
+        type: "lora"
+        linear: 64
+        linear_alpha: 64
+      save:
+        dtype: bf16
+        save_every: 250
+        max_step_saves_to_keep: 4
+      datasets:
+        - folder_path: "/path/to/dataset/targets"
+          caption_ext: "txt"
+          caption_dropout_rate: 0.0
+          # channel numbers matter: native_motion_source_channel below points at one of them
+          control_path_1: "/path/to/dataset/motion"
+          control_path_2: "/path/to/dataset/identity"
+          resolution: [ 384 ]
+          num_frames: 107       # 17n+5 frames at 24 fps
+          fps: 24
+          shrink_video_to_frames: false
+          auto_frame_count: false
+          cache_latents_to_disk: true
+          cache_text_embeddings: true
+      train:
+        batch_size: 1
+        steps: 3000
+        gradient_accumulation: 1
+        train_unet: true
+        train_text_encoder: false
+        gradient_checkpointing: true
+        noise_scheduler: "flowmatch"
+        timestep_type: "shift"
+        optimizer: "adamw8bit"
+        lr: 1e-4
+        optimizer_params:
+          weight_decay: 1e-4
+        cache_text_embeddings: true
+        dtype: bf16
+      model:
+        name_or_path: "MiniMaxAI/MiniMax-H3"
+        arch: "minimax_h3_ref2va"
+        quantize: true
+        quantize_te: true
+        low_vram: true
+        model_kwargs:
+          partition: "ref2va_pruned"
+          sample_audio: false
+          # --- TARA ---
+          native_temporal_alignment: true
+          native_motion_source_channel: 1         # control_path_1 holds the motion video
+          native_temporal_strength: 2.0           # lambda: penalty scale
+          native_temporal_window_seconds: 0.2     # w: no penalty within this distance
+          native_temporal_falloff_seconds: 0.25   # f: quadratic falloff scale
+          native_temporal_max_penalty: 6.0        # c: cap, far moments stay visible
+      sample:
+        sampler: "flowmatch"
+        sample_every: 250
+        width: 672
+        height: 384
+        seed: 42
+        guidance_scale: 1
+        sample_steps: 28
+        num_frames: 107   # not longer than the motion video
+        fps: 24
+        samples:
+          - prompt: "motion_transfer: subject_definitions: <Subject 1> is the person shown in <Picture 1>; it takes the place of the person in <Video 1>. ..."
+            ctrl_img_1: "/path/to/preview/motion.mp4"
+            ctrl_img_2: "/path/to/preview/identity.png"
+meta:
+  name: "[name]"
+  version: '1.0'

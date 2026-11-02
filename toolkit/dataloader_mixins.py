@@ -50,6 +50,27 @@ accelerator = get_accelerator()
 
 # def get_associated_caption_from_img_path(img_path):
 # https://demo.albumentations.ai/
+
+def control_source_channels(dataset_config, count):
+    """1-based control channel of each entry of ``dataset_config.control_path``.
+
+    Paths from the UI's control_path_1..3 keep their own number even when an
+    earlier one is empty; a plain control_path list is numbered 1..N.
+    """
+    channels = [i for i in (1, 2, 3) if getattr(dataset_config, f'control_path_{i}', None)]
+    if not channels:
+        return list(range(1, count + 1))
+    if len(channels) != count:
+        raise ValueError('Control channel and control path counts do not match')
+    return channels
+
+
+def _restore_video_frame_indices(file_item, state_dict):
+    if 'video_frame_indices' in state_dict:
+        file_item.video_frame_indices = tuple(int(x) for x in state_dict['video_frame_indices'].tolist())
+        file_item.video_source_fps = float(state_dict['video_source_fps'].item())
+
+
 class Augments:
     def __init__(self, **kwargs):
         self.method_name = kwargs.get('method', None)
@@ -671,6 +692,10 @@ class ImageProcessingDTOMixin:
                     
             # Final safety check - ensure no frame exceeds max valid index
             frames_to_extract = [min(frame_idx, max_frame_index) for frame_idx in frames_to_extract]
+            # the exact source frames of this sample: a temporally aligned motion
+            # reference (MiniMax H3 TARA) reads the same moments of its own video
+            self.video_frame_indices = tuple(frames_to_extract)
+            self.video_source_fps = video_fps
             
             # Only log frames to extract if in debug mode
             if hasattr(self.dataset_config, 'debug') and self.dataset_config.debug:
@@ -1187,12 +1212,18 @@ class ControlFileItemDTOMixin:
             
             found_control_images = []
             found_control_videos = []
+            # the control channel (1-based, control_path_N) each found file came
+            # from, so a model can tell a motion video from identity pictures
+            self.control_image_source_ids = []
+            self.control_video_source_ids = []
             allow_video_controls = sd is not None and getattr(
                 sd, 'supports_video_control_images', False)
-            for control_path in control_path_list:
+            for source_id, control_path in zip(control_source_channels(dataset_config, len(control_path_list)),
+                                               control_path_list):
                 for ext in img_ext_list:
                     if os.path.exists(os.path.join(control_path, file_name_no_ext + ext)):
                         found_control_images.append(os.path.join(control_path, file_name_no_ext + ext))
+                        self.control_image_source_ids.append(source_id)
                         self.has_control_image = True
                         break
                 else:
@@ -1200,6 +1231,7 @@ class ControlFileItemDTOMixin:
                         for ext in video_ext_list:
                             if os.path.exists(os.path.join(control_path, file_name_no_ext + ext)):
                                 found_control_videos.append(os.path.join(control_path, file_name_no_ext + ext))
+                                self.control_video_source_ids.append(source_id)
                                 self.has_control_image = True
                                 break
             # control VIDEO paths ride on the item; the model encodes and
@@ -1998,6 +2030,7 @@ class LatentCachingFileItemDTOMixin:
                 self._encoded_latent = DTO(self._encoded_latent, **extras)
             if 'num_frames' in state_dict:
                 self.num_frames = int(state_dict['num_frames'].item())
+            _restore_video_frame_indices(self, state_dict)
             if 'tensor' in state_dict:
                 self._cached_tensor_uint8 = state_dict['tensor']
             if 'waveform' in state_dict:
@@ -2140,6 +2173,8 @@ class LatentCachingMixin:
     ):
         # check if it is saved to disk already
         if not needs_encode:
+            if cached_state_dict is not None:
+                _restore_video_frame_indices(file_item, cached_state_dict)
             if to_memory:
                 # load it into memory
                 state_dict = cached_state_dict
@@ -2236,6 +2271,9 @@ class LatentCachingMixin:
 
             if is_video:
                 state_dict['num_frames'] = torch.tensor(file_item.num_frames, dtype=torch.int32)
+                if getattr(file_item, 'video_frame_indices', None) is not None:
+                    state_dict['video_frame_indices'] = torch.tensor(file_item.video_frame_indices, dtype=torch.int64)
+                    state_dict['video_source_fps'] = torch.tensor(float(file_item.video_source_fps), dtype=torch.float64)
 
             # save_latent
             if to_disk:
