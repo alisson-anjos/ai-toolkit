@@ -136,7 +136,7 @@ class RewardClient:
                 break
 
     def __call__(self, gen: np.ndarray, tgt: np.ndarray, mask: np.ndarray | None, ref: np.ndarray | None = None,
-                 judge_ref: np.ndarray | None = None) -> dict:
+                 judge_ref: np.ndarray | None = None, judge_context: dict | None = None) -> dict:
         fd, path = tempfile.mkstemp(suffix=".npz")
         os.close(fd)
         try:
@@ -148,7 +148,7 @@ class RewardClient:
             if judge_ref is not None:
                 kw["judge_ref"] = judge_ref
             np.savez(path, **kw)
-            self.p.stdin.write(json.dumps({"npz": path}) + "\n")
+            self.p.stdin.write(json.dumps({"npz": path, **({"judge_context": judge_context} if judge_context else {})}) + "\n")
             self.p.stdin.flush()
             while True:
                 line = self.p.stdout.readline()
@@ -499,7 +499,14 @@ def nft_step(trainer, batch, accum_scale: float = 1.0) -> torch.Tensor:
         gens = np.stack([_to_uint8(trainer.sd.decode_latents(x.to(dtype))) for x in x0s])
     item = batch.file_items[0].path
     mask = _pixel_mask(item, tgt.shape[0], tgt.shape[1:3])
-    if pool_img is not None:          # the pool character is this step's reference for every reward
+    if c.get("judge_context_root"):
+        # Source-only RL: the guide is shape/context input, not an edited target.
+        # Explicit source identity + trajectory + replacement binding reaches the critic.
+        context_file = os.path.join(c["judge_context_root"], os.path.splitext(os.path.basename(item))[0] + ".json")
+        with open(context_file) as context_stream:
+            context = json.load(context_stream)
+        r = st.rewards(gens, tgt, None, judge_context=context)
+    elif pool_img is not None:          # the pool character is this step's reference for every reward
         jref = pool_img if any(k in c["weights"] for k in ("gpt_id", "gpt_q")) else None
         r = st.rewards(gens, tgt, mask, pool_img, jref)
     else:

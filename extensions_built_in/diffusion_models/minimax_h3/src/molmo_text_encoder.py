@@ -20,6 +20,8 @@ import torch
 from PIL import Image
 from safetensors import safe_open
 
+from toolkit.source_person import SourcePersonRef
+
 from .packing import TEXT_TAG
 from .text_encoder import VideoRef
 
@@ -296,10 +298,16 @@ class MolmoH3TextEncoder(torch.nn.Module):
             videos = [k for k in keyframes if isinstance(k, VideoRef)]
             ordered_keyframes = images + videos
 
+        if not self.phase_b_vision and any(isinstance(k, SourcePersonRef) for k in ordered_keyframes):
+            raise ValueError('Source-person photo context requires visual mode')
+
         visuals = []
         if self.phase_b_vision and ordered_keyframes:
             for item in ordered_keyframes:
-                if isinstance(item, VideoRef):
+                if isinstance(item, SourcePersonRef):
+                    arr = np.asarray(item.image.convert('RGB'), dtype=np.uint8)
+                    visuals.append({'type': 'source_person', 'array': arr})
+                elif isinstance(item, VideoRef):
                     arr = np.stack([np.asarray(f.convert("RGB"), dtype=np.uint8) for f in item.frames])
                     visuals.append(
                         {

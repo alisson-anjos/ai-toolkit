@@ -2351,6 +2351,9 @@ class TextEmbeddingFileItemDTOMixin:
         # out of their cache key
         if text_only:
             return item
+        from toolkit.source_person import source_person_cache_info
+        item.update(source_person_cache_info(
+            getattr(self.dataset_config, 'source_person_path', None), self.path))
         # if we have a control image, cache the path
         if self.encode_control_in_text_embeddings and self.control_path is not None:
             item["control_path"] = self.control_path
@@ -2581,6 +2584,12 @@ class TextEmbeddingCachingMixin:
                 # (path, caption) pairs to encode for this item
                 encode_targets = [(text_embedding_path, file_item.caption)]
                 item_config = file_item.dataset_config
+                if getattr(item_config, 'source_person_path', None) and (
+                    not file_item.encode_control_in_text_embeddings
+                    or getattr(file_item, 'control_latent_only', False)
+                    or not (file_item.control_path or getattr(file_item, 'control_video_paths', None))
+                ):
+                    raise ValueError('Source-person photos require multimodal controls in the text-embedding cache')
                 if item_config.diff_output_preservation:
                     dop_path = file_item.get_dop_text_embedding_path(recalculate=True)
                     if dop_path != text_embedding_path:
@@ -2651,6 +2660,11 @@ class TextEmbeddingCachingMixin:
                         if len(control_video_paths) > 0:
                             self.sd._ref_video_dataset_config = item_config
                         
+                        from toolkit.source_person import source_person_photo
+                        source_path = source_person_photo(
+                            getattr(item_config, 'source_person_path', None), file_item.path)
+                        if source_path:
+                            ctrl_img_list.insert(0, self.sd.prepare_source_person_context(source_path))
                         if len(ctrl_img_list) == 0:
                             ctrl_img = None
                         elif not self.sd.has_multiple_control_images:
