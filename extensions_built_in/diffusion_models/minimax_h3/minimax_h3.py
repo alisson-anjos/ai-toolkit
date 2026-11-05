@@ -464,6 +464,28 @@ class MinimaxH3Model(BaseModel):
         return MiniMaxH3Transformer.load_model(dit_path, dtype=self.torch_dtype)
 
     def _load_text_encoder(self):
+        molmo_proj = self.model_config.model_kwargs.get("molmo_projection_path", None)
+        if molmo_proj:
+            # Molmo2-8B in place of the Qwen3-VL-32B encoder: its hidden states (tap 24) go through a calibrated
+            # projection into H3's 5120-dim conditioning space (projects/molmo-h3-encoder phase A/B).
+            from .src.molmo_text_encoder import MolmoH3TextEncoder
+
+            kw = self.model_config.model_kwargs
+            self.print_and_status_update(
+                f"Loading Molmo2-8B + H3 projection from {molmo_proj} (vision={bool(kw.get('molmo_phase_b_vision', True))})"
+            )
+            text_encoder = MolmoH3TextEncoder(
+                molmo_model_path=kw.get("molmo_model_path", os.environ.get("HENGE_MOLMO_MODEL", "")),
+                molmo_projection_path=molmo_proj,
+                molmo_python_path=kw.get("molmo_python_path", os.environ.get("HENGE_MOLMO_PYTHON", None)),
+                phase_b_vision=bool(kw.get("molmo_phase_b_vision", True)),
+                max_video_frames=int(kw.get("molmo_max_video_frames", 8)),
+            )
+            text_encoder.eval()
+            text_encoder.requires_grad_(False)
+            flush()
+            return text_encoder.tokenizer, None, text_encoder
+
         from accelerate import init_empty_weights
         from transformers import (
             AutoConfig,
@@ -1215,6 +1237,12 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
 
     @property
     def text_embedding_space_version(self):
+        # Molmo2 + projection writes another embedding space: its own cache key
+        molmo_proj = self.model_config.model_kwargs.get("molmo_projection_path", None)
+        if molmo_proj:
+            base = os.path.splitext(os.path.basename(str(molmo_proj)))[0]
+            vis = "vis" if self.model_config.model_kwargs.get("molmo_phase_b_vision", True) else "txt"
+            return f"minimax_h3_molmo_{base}_{vis}"
         # the presentation of image references changes the embeds -> new cache key
         n = self._image_ref_video_frames()
         if n:
