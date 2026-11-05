@@ -48,3 +48,26 @@ def test_gradients_reach_slot_and_projection():
     b = mod.video_bias([sb.Subject(track((0, .5, .5)), torch.randn(5), 1)], [slice(0, 1)], 1, (1, 2, 2), 5, 1.)
     (b * torch.randn_like(b)).sum().backward()
     assert mod.slot.grad.abs().sum() > 0 and mod.proj.weight.grad.abs().sum() > 0
+
+
+def test_model_builds_the_batch_bias_from_molmo_files(tmp_path):
+    """MinimaxH3Ref2VAModel._subject_video_bias: reads molmo/<stem>.npz beside the targets folder, tags the Picture rows
+    found in ref_blocks (pictures are the 1-frame blocks) and the target rows."""
+    import importlib.util, types, numpy as np
+    spec = importlib.util.spec_from_file_location("mh3", Path(__file__).resolve().parents[1] / "extensions_built_in/diffusion_models/minimax_h3/minimax_h3.py",
+                                                  submodule_search_locations=[])
+    try:
+        from extensions_built_in.diffusion_models.minimax_h3.minimax_h3 import MinimaxH3Ref2VAModel as M
+    except Exception as e:   # heavy deps missing on this machine
+        import pytest; pytest.skip(f"model module not importable here: {e}")
+    (tmp_path / "targets").mkdir(); (tmp_path / "molmo").mkdir()
+    np.savez(tmp_path / "molmo" / "clip1.npz", tracks_1=np.array([[0, .5, .5]], np.float32), vector_1=np.ones(8, np.float32))
+    mod = sb.SubjectBinding(hidden=4, vector_dim=8, max_subjects=2)
+    with torch.no_grad(): mod.slot[0] = torch.tensor([1., 2, 3, 4])
+    fake = types.SimpleNamespace(subject_binding=mod, subject_binding_options={"sigma": 1.0})
+    batch = types.SimpleNamespace(file_items=[types.SimpleNamespace(path=str(tmp_path / "targets" / "clip1.mp4"))])
+    # one picture block (1 x 4 x 4 latents -> 4 rows) then a motion video block (2 x 4 x 4 -> 8 rows)
+    bias = M._subject_video_bias(fake, batch, ((1, 4, 4, 0), (2, 4, 4, 0)), 12, (1, 2, 2), 5, "cpu", torch.float32)
+    assert bias.shape == (1, 12 + 4, 4)
+    assert torch.allclose(bias[0, 0], torch.tensor([1., 2, 3, 4])) and float(bias[0, 4:12].abs().sum()) == 0
+    assert float(bias[0, 12:].abs().sum()) > 0

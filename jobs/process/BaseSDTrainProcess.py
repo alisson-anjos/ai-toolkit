@@ -553,6 +553,10 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
                 # if we are doing embedding training as well, add that
                 embedding_dict = self.embedding.state_dict() if self.embedding else None
+                model_extra = getattr(self.sd, 'get_extra_state_dict', None)
+                model_extra = model_extra() if callable(model_extra) else None
+                if model_extra:
+                    embedding_dict = {**(embedding_dict or {}), **model_extra}
                 self.network.save_weights(
                     file_path,
                     dtype=get_torch_dtype(self.save_config.dtype),
@@ -2020,6 +2024,10 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 )
 
                 params += params_net
+                # model pieces trained next to the network (e.g. MiniMax H3 subject binding)
+                extra_params = getattr(self.sd, 'get_extra_trainable_params', None)
+                if callable(extra_params):
+                    params += extra_params(self.train_config.lr)
 
                 if self.train_config.gradient_checkpointing:
                     self.network.enable_gradient_checkpointing()
@@ -2035,6 +2043,9 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     print_acc(f"#### IMPORTANT RESUMING FROM {latest_save_path} ####")
                     print_acc(f"Loading from {latest_save_path}")
                     extra_weights = self.load_weights(latest_save_path)
+                    load_extra = getattr(self.sd, 'load_extra_state_dict', None)
+                    if callable(load_extra):
+                        load_extra(extra_weights)
                     self.network.multiplier = 1.0
                 elif self.train_config.merge_network_on_save and self.network_config.pretrained_lora_path is not None:
                     # with merge_network_on_save, saved checkpoints are full models that get loaded as the

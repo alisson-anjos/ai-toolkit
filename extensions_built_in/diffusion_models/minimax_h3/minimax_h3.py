@@ -46,6 +46,7 @@ from PIL import Image
 from safetensors.torch import load_file, save_file
 
 from toolkit import h3_native_temporal as native_temporal
+from toolkit import h3_subject_binding as subject_binding
 from toolkit.accelerator import unwrap_model
 from toolkit.advanced_prompt_embeds import AdvancedPromptEmbeds
 from toolkit.basic import flush
@@ -224,6 +225,9 @@ class MinimaxH3Model(BaseModel):
         # TARA: native motion-video reference on the target clock + temporal
         # attention bias (toolkit/h3_native_temporal.py); off unless enabled
         self.native_temporal_options = native_temporal.options(self.model_config.model_kwargs)
+        # subject binding (toolkit/h3_subject_binding.py): Molmo2 tracks + vectors -> tags; off unless enabled
+        self.subject_binding_options = subject_binding.options(self.model_config.model_kwargs)
+        self.subject_binding = None
         # control channel of each reference block of the current batch, in
         # packing order (set by Ref2VA's _build_condition)
         self._condition_source_ids = ()
@@ -624,6 +628,11 @@ class MinimaxH3Model(BaseModel):
         self.tokenizer = tokenizer
         self.processor = processor
         self.model = transformer
+        if self.subject_binding_options["enabled"]:
+            o = self.subject_binding_options
+            self.subject_binding = subject_binding.SubjectBinding(
+                transformer.params.hidden_size, o["vector_dim"], o["max_subjects"]
+            ).to(self.device_torch, torch.float32)
         self.pipeline = MiniMaxH3Pipeline(self)
         self.print_and_status_update("Model Loaded")
 
@@ -1036,6 +1045,11 @@ class MinimaxH3Model(BaseModel):
             if cond_rows is not None:
                 video_rows = torch.cat([cond_rows, video_rows], dim=1)
 
+        # outside no_grad: the binding module is trained
+        subject_bias = self._subject_video_bias(
+            batch, ref_blocks, num_cond, (t_lat, h_lat // 2, w_lat // 2), num_frames, device, dtype
+        )
+
         video_pred, audio_pred = self.model(
             hidden_states=video_rows,
             audio_hidden_states=audio_rows.to(dtype),
@@ -1051,6 +1065,7 @@ class MinimaxH3Model(BaseModel):
             pdd_weights=self._pdd_weights(sigma_v),
             native_motion_mask=motion_masks.to(device) if motion_masks is not None else None,
             native_temporal_options=self.native_temporal_options,
+            subject_video_bias=subject_bias,
         )
 
         if num_cond_audio > 0:
@@ -1400,9 +1415,59 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
 
     def get_additional_save_metadata(self):
         """Stored in the LoRA so inference can reproduce the training policy."""
-        if not self.native_temporal_options["enabled"]:
-            return {}
-        return native_temporal.save_metadata(self.native_temporal_options)
+        meta = {}
+        if self.native_temporal_options["enabled"]:
+            meta.update(native_temporal.save_metadata(self.native_temporal_options))
+        if self.subject_binding is not None:
+            meta.update(subject_binding.save_metadata(self.subject_binding_options))
+        return meta
+
+    # trainable pieces outside the LoRA network (the trainer adds them to the optimizer and to the saved file)
+    def get_extra_trainable_params(self, lr):
+        if self.subject_binding is None:
+            return []
+        scale = float(self.model_config.model_kwargs.get("subject_binding_lr_scale", 1.0))
+        return [{"params": list(self.subject_binding.parameters()), "lr": lr * scale}]
+
+    def get_extra_state_dict(self):
+        if self.subject_binding is None:
+            return None
+        return {f"subject_binding.{k}": v.detach().to("cpu") for k, v in self.subject_binding.state_dict().items()}
+
+    def load_extra_state_dict(self, state):
+        if self.subject_binding is None or not state:
+            return
+        mine = {k[len("subject_binding."):]: v for k, v in state.items() if k.startswith("subject_binding.")}
+        if mine:
+            self.subject_binding.load_state_dict(mine)
+            self.print_and_status_update(f"Subject binding weights restored ({len(mine)} tensors)")
+
+    def _subject_video_bias(self, batch, ref_blocks, num_cond_rows, target_grid, num_frames, device, dtype):
+        """(B, Nv, hidden) subject tags for the batch, or None. Each item's Molmo2 data: `molmo/<stem>.npz` next to its
+        targets folder (tracks_<k> (n, 3) t/x/y, optional vector_<k>, optional `use` = 0 to train that item without it)."""
+        if self.subject_binding is None or batch is None or not getattr(batch, "file_items", None):
+            return None
+        picture_rows, offset = [], 0
+        for t, h, w, *_ in ref_blocks:
+            rows = t * (h // 2) * (w // 2)
+            if t == 1:
+                picture_rows.append(slice(offset, offset + rows))
+            offset += rows
+        out = []
+        for item in batch.file_items:
+            stem = os.path.splitext(os.path.basename(item.path))[0]
+            data_path = os.path.join(os.path.dirname(os.path.dirname(item.path)), "molmo", stem + ".npz")
+            subjects = []
+            if os.path.isfile(data_path):
+                import numpy as np
+                z = np.load(data_path)
+                if int(z["use"]) if "use" in z.files else 1:
+                    for k in sorted(int(n.split("_")[1]) for n in z.files if n.startswith("tracks_")):
+                        vec = torch.from_numpy(z[f"vector_{k}"].astype("float32")) if f"vector_{k}" in z.files else None
+                        subjects.append(subject_binding.Subject(torch.from_numpy(z[f"tracks_{k}"].astype("float32")), vec, k))
+            out.append(self.subject_binding.video_bias(subjects, picture_rows, num_cond_rows, target_grid, num_frames,
+                                                       self.subject_binding_options["sigma"], dtype=dtype, device=device))
+        return torch.stack(out)
 
     def _build_dopsd_teacher_condition(self, batch, latent_shape, device, dtype):
         """D-OPSD teacher: the target is its own (only) reference, built from
