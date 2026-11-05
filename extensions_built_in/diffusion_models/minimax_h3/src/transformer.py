@@ -550,6 +550,8 @@ class MiniMaxH3Transformer(nn.Module, OstrisModelMixin):
         # TARA (toolkit/h3_native_temporal.py): (B, S) motion-video rows and options
         native_motion_mask: Optional[torch.Tensor] = None,
         native_temporal_options: Optional[dict] = None,
+        # Subject binding (toolkit/h3_subject_binding.py): (B, Nv, hidden) added to the video embeddings
+        subject_video_bias: Optional[torch.Tensor] = None,
     ):
         """Returns (video_out (B, Nv, 96), audio_out (B, Na, 32)) — the
         data-ward velocity ``clean - noise`` for every row, in input order.
@@ -562,6 +564,8 @@ class MiniMaxH3Transformer(nn.Module, OstrisModelMixin):
         video_embeds = self.video_patch_proj(
             hidden_states.to(self.video_patch_proj.weight.dtype)
         )
+        if subject_video_bias is not None:
+            video_embeds = video_embeds + subject_video_bias.to(video_embeds.dtype)
         audio_embeds = self.audio_patch_proj(
             audio_hidden_states.to(self.audio_patch_proj.weight.dtype)
         )
