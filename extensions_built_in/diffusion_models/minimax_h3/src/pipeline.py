@@ -147,6 +147,20 @@ class MiniMaxH3Pipeline:
             layout, ref_blocks, tuple(kwargs.get("ref_source_ids", ())), temporal_options
         )
         num_cond = layout.num_condition_video_rows
+        subject_bias = None
+        binding = getattr(model, "subject_binding", None)
+        if binding is not None and kwargs.get("subjects"):
+            picture_rows, offset = [], 0
+            for t, h, w, *_ in ref_blocks:
+                rows = t * (h // 2) * (w // 2)
+                if t == 1:
+                    picture_rows.append(slice(offset, offset + rows))
+                offset += rows
+            with torch.no_grad():
+                subject_bias = binding.video_bias(
+                    kwargs["subjects"], picture_rows, num_cond, (t_lat, h_lat // 2, w_lat // 2), num_frames,
+                    model.subject_binding_options["sigma"], dtype=dtype, device=device,
+                )[None]
 
         # --- conditioning rows (draw order: condition noise, video, audio) --
         def encode_condition_image(img: Image.Image) -> torch.Tensor:
@@ -260,6 +274,7 @@ class MiniMaxH3Pipeline:
                 pdd_weights=model._pdd_weights(sv, sv_next),
                 native_motion_mask=motion_mask[None].to(device) if temporal_options["enabled"] else None,
                 native_temporal_options=temporal_options,
+                subject_video_bias=subject_bias,
             )
             v_video = video_pred[:, num_cond:].float()
             v_audio = audio_pred[:, layout.num_condition_audio_rows :].float()

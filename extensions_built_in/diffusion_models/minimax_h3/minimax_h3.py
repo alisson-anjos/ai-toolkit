@@ -1452,6 +1452,21 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
             self.subject_binding.load_state_dict(mine)
             self.print_and_status_update(f"Subject binding weights restored ({len(mine)} tensors)")
 
+    @staticmethod
+    def load_subjects(path):
+        """Subjects (Molmo2 tracks + vectors) from a molmo .npz, in Picture order; [] without a file or with use=0."""
+        if not path or not os.path.isfile(path):
+            return []
+        import numpy as np
+        z = np.load(path)
+        if "use" in z.files and not int(z["use"]):
+            return []
+        out = []
+        for k in sorted(int(n.split("_")[1]) for n in z.files if n.startswith("tracks_")):
+            vec = torch.from_numpy(z[f"vector_{k}"].astype("float32")) if f"vector_{k}" in z.files else None
+            out.append(subject_binding.Subject(torch.from_numpy(z[f"tracks_{k}"].astype("float32")), vec, k))
+        return out
+
     def _subject_video_bias(self, batch, ref_blocks, num_cond_rows, target_grid, num_frames, device, dtype):
         """(B, Nv, hidden) subject tags for the batch, or None. Each item's Molmo2 data: `molmo/<stem>.npz` next to its
         targets folder (tracks_<k> (n, 3) t/x/y, optional vector_<k>, optional `use` = 0 to train that item without it)."""
@@ -1467,14 +1482,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         for item in batch.file_items:
             stem = os.path.splitext(os.path.basename(item.path))[0]
             data_path = os.path.join(os.path.dirname(os.path.dirname(item.path)), "molmo", stem + ".npz")
-            subjects = []
-            if os.path.isfile(data_path):
-                import numpy as np
-                z = np.load(data_path)
-                if int(z["use"]) if "use" in z.files else 1:
-                    for k in sorted(int(n.split("_")[1]) for n in z.files if n.startswith("tracks_")):
-                        vec = torch.from_numpy(z[f"vector_{k}"].astype("float32")) if f"vector_{k}" in z.files else None
-                        subjects.append(subject_binding.Subject(torch.from_numpy(z[f"tracks_{k}"].astype("float32")), vec, k))
+            subjects = self.load_subjects(data_path)
             out.append(self.subject_binding.video_bias(subjects, picture_rows, num_cond_rows, target_grid, num_frames,
                                                        self.subject_binding_options["sigma"], dtype=dtype, device=device))
         return torch.stack(out)
@@ -1771,6 +1779,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
             ref_images=ref_images or None,
             ref_source_ids=ref_source_ids,
             with_audio=with_audio and is_video,
+            subjects=self.load_subjects(getattr(gen_config, "subject_file", None)),
         )
         if is_video:
             return result  # dict consumed by new_save_image_function

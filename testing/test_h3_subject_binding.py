@@ -64,7 +64,7 @@ def test_model_builds_the_batch_bias_from_molmo_files(tmp_path):
     np.savez(tmp_path / "molmo" / "clip1.npz", tracks_1=np.array([[0, .5, .5]], np.float32), vector_1=np.ones(8, np.float32))
     mod = sb.SubjectBinding(hidden=4, vector_dim=8, max_subjects=2)
     with torch.no_grad(): mod.slot[0] = torch.tensor([1., 2, 3, 4])
-    fake = types.SimpleNamespace(subject_binding=mod, subject_binding_options={"sigma": 1.0})
+    fake = types.SimpleNamespace(subject_binding=mod, subject_binding_options={"sigma": 1.0}, load_subjects=M.load_subjects)
     batch = types.SimpleNamespace(file_items=[types.SimpleNamespace(path=str(tmp_path / "targets" / "clip1.mp4"))])
     # one picture block (1 x 4 x 4 latents -> 4 rows) then a motion video block (2 x 4 x 4 -> 8 rows)
     bias = M._subject_video_bias(fake, batch, ((1, 4, 4, 0), (2, 4, 4, 0)), 12, (1, 2, 2), 5, "cpu", torch.float32)

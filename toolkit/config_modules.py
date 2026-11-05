@@ -66,6 +66,8 @@ class SampleItem:
         self.ctrl_img_1: Optional[str] = kwargs.get('ctrl_img_1', self.ctrl_img)
         self.ctrl_img_2: Optional[str] = kwargs.get('ctrl_img_2', None)
         self.ctrl_img_3: Optional[str] = kwargs.get('ctrl_img_3', None)
+        # MiniMax H3 subject binding: Molmo2 tracks/vectors (.npz) for this sample
+        self.subject_file: Optional[str] = kwargs.get('subject_file', None)
         
         self.network_multiplier: float = kwargs.get('network_multiplier', sample_config.network_multiplier)
         # convert to a number if it is a string
@@ -1185,6 +1187,7 @@ class GenerateImageConfig:
             ctrl_img_1: Optional[str] = None,  # first control image for multi control model
             ctrl_img_2: Optional[str] = None,  # second control image for multi control model
             ctrl_img_3: Optional[str] = None,  # third control image for multi control model
+            subject_file: Optional[str] = None,  # MiniMax H3 subject binding (.npz)
             num_frames: int = 1,
             fps: int = 15,
             duration: Optional[float] = None,  # audio models: max seconds
@@ -1235,6 +1238,7 @@ class GenerateImageConfig:
         self.ctrl_img_1 = ctrl_img_1
         self.ctrl_img_2 = ctrl_img_2
         self.ctrl_img_3 = ctrl_img_3
+        self.subject_file = subject_file
 
         # prompt string will override any settings above
         self._process_prompt_string()
