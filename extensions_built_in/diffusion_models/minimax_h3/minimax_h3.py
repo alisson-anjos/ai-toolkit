@@ -697,17 +697,27 @@ class MinimaxH3Model(BaseModel):
         for p, keyframes in zip(prompt, keyframes_per_prompt):
             if keyframes and self.native_temporal_options["enabled"]:
                 keyframes = native_temporal.reference_order(keyframes, lambda item: isinstance(item, VideoRef))
-            embeds, tags = encode_minimax_h3_prompt(
-                self.text_encoder,
-                self.tokenizer,
-                self.processor,
-                p.strip(),
-                keyframes=keyframes,
-                device=self.device_torch,
-                dtype=self.torch_dtype,
-                max_length=self.max_text_length,
-                **self._prompt_encoder_kwargs(),
-            )
+            if hasattr(self.text_encoder, "encode_prompt"):
+                # Molmo2 + projection (molmo_text_encoder.py) encodes the prompt and its references itself
+                embeds, tags = self.text_encoder.encode_prompt(
+                    p.strip(),
+                    keyframes=keyframes,
+                    device=self.device_torch,
+                    dtype=self.torch_dtype,
+                    max_length=self.max_text_length,
+                )
+            else:
+                embeds, tags = encode_minimax_h3_prompt(
+                    self.text_encoder,
+                    self.tokenizer,
+                    self.processor,
+                    p.strip(),
+                    keyframes=keyframes,
+                    device=self.device_torch,
+                    dtype=self.torch_dtype,
+                    max_length=self.max_text_length,
+                    **self._prompt_encoder_kwargs(),
+                )
             embeds_list.append(embeds)
             tags_list.append(tags)
 
