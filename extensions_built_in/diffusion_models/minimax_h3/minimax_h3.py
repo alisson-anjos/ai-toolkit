@@ -1638,7 +1638,11 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         }
 
     def _audio_guide_path(self, file_item, suffix):
+        """<video stem><suffix> next to the video, or <audio_guide_folder>/<video name stem><suffix>."""
         stem, _ = os.path.splitext(file_item.path)
+        folder = self.model_config.model_kwargs.get("audio_guide_folder")
+        if folder:
+            stem = os.path.join(folder, os.path.basename(stem))
         return stem + suffix
 
     def _audio_guide_rows(self, batch, device, dtype):
