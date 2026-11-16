@@ -1226,6 +1226,9 @@ class MinimaxH3Model(BaseModel):
         if num_cond_audio > 0:
             # reference soundtrack rows are conditioning, not targets
             audio_pred = audio_pred[:, num_cond_audio:]
+        if not getattr(self, "_audio_stream_logged", False):
+            print(f"[H3 audio] target audio loss: {audio_target is not None}; condition audio rows: {num_cond_audio}", flush=True)
+            self._audio_stream_logged = True
 
         video_pred = video_pred[:, num_cond:]
         noise_pred = unpatchify_video_tokens(video_pred, t_lat, h_lat, w_lat)
@@ -1684,7 +1687,11 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                     packed = self.encode_audio([{"waveform": waveform[:2], "sample_rate": sample_rate}])
                 cache[key] = packed[0].detach().to("cpu", torch.float32)
             rows.append(self._fit_audio_rows(cache[key].to(device, torch.float32), a_lat))
-        return torch.stack(rows).to(dtype)
+        out = torch.stack(rows).to(dtype)
+        if not getattr(self, "_audio_guide_logged", False):
+            print(f"[H3 audio guide] {tuple(out.shape)} clean rows at frame 0 from {paths[0]}", flush=True)
+            self._audio_guide_logged = True
+        return out
 
     def _build_reference_condition(
         self, batch: "DataLoaderBatchDTO", latent_shape, device, dtype
