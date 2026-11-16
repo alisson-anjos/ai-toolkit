@@ -37,6 +37,7 @@ Conventions bridged to ai-toolkit:
 """
 
 import os
+import random
 from functools import partial
 from typing import TYPE_CHECKING, List, Optional
 
@@ -906,9 +907,14 @@ class MinimaxH3Model(BaseModel):
 
         A head-swap pack is exactly this pair: aligned driving video, unaligned identity.
         """
-        if not ref_blocks or not (self.model_config.model_kwargs.get(
+        if not ref_blocks:
+            return ()
+        if not (self.model_config.model_kwargs.get(
             "align_video_refs", False
         ) or self.model_config.model_kwargs.get("align_image_refs", False)):
+            # only an audio guide (no video rows) claims the target's clock then
+            if any(block[0] == 0 for block in ref_blocks):
+                return tuple(block[0] == 0 for block in ref_blocks)
             return ()
         return tuple(bool(block[4]) if len(block) > 4 else bool(self.model_config.model_kwargs.get("align_video_refs")) and block[0] > 1 for block in ref_blocks)
 
@@ -1539,6 +1545,80 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         return result
 
     def _build_condition(
+        self, batch: "DataLoaderBatchDTO", latent_shape, device, dtype
+    ):
+        cond_rows, cond_audio, anchors, blocks = self._build_reference_condition(
+            batch, latent_shape, device, dtype
+        )
+        guide = self._audio_guide_rows(batch, device, dtype)
+        if guide is None:
+            return cond_rows, cond_audio, anchors, blocks
+        # The guide packs first, right after the text, like ComfyUI's
+        # "Add Guide for MiniMax H3" at frame 0: an aligned block with no video
+        # rows, so its sound sits on the target's own clock and width grid and
+        # does not push the media clock forward.
+        _, h_lat, w_lat = latent_shape
+        factor = self._reference_downscale_factor()
+        block = (0, h_lat // factor, w_lat // factor, guide.shape[1] // packing.AUDIO_CHANNELS, True)
+        if blocks and len(blocks[0]) > 5:
+            block = (*block, 1)
+        cond_audio = guide if cond_audio is None else torch.cat([guide, cond_audio], dim=1)
+        return cond_rows, cond_audio, anchors, (block,) + tuple(blocks)
+
+    def _audio_guide_options(self):
+        kw = self.model_config.model_kwargs
+        if not kw.get("audio_guide", False):
+            return None
+        return {
+            "suffix": kw.get("audio_guide_suffix", "_guide.wav"),
+            "dropout": dropout_probability(kw.get("audio_guide_dropout", 0.0), "audio_guide_dropout"),
+            "required": kw.get("audio_guide_required", True),
+        }
+
+    def _audio_guide_path(self, file_item, suffix):
+        stem, _ = os.path.splitext(file_item.path)
+        return stem + suffix
+
+    def _audio_guide_rows(self, batch, device, dtype):
+        """Clean packed rows (B, 2*a_lat, 32) of each item's guide sound, or None.
+
+        The guide is a sound anchored at frame 0 that only says *when* things
+        happen (an NKD Event Curve guide): the target keeps its own soundtrack,
+        so the model learns to follow the guide's timing without copying it.
+        """
+        opts = self._audio_guide_options()
+        if opts is None or batch is None or not batch.file_items:
+            return None
+        num_frames = getattr(batch, "num_frames", 1) or 1
+        if num_frames <= 1:
+            return None
+        if opts["dropout"] and random.random() < opts["dropout"]:
+            return None
+        paths = [self._audio_guide_path(item, opts["suffix"]) for item in batch.file_items]
+        missing = [p for p in paths if not os.path.exists(p)]
+        if missing:
+            if opts["required"]:
+                raise FileNotFoundError(f"audio_guide: no guide sound at {missing[0]}")
+            if len(missing) == len(paths):
+                return None
+            raise ValueError("audio_guide: every item in a batch needs a guide, or none; use batch_size 1")
+        a_lat = packing.audio_latent_num_frames(num_frames)
+        cache = self.__dict__.setdefault("_audio_guide_cache", {})
+        rows = []
+        for path in paths:
+            key = (path, os.path.getmtime(path))
+            if key not in cache:
+                import torchaudio
+                waveform, sample_rate = torchaudio.load(path)
+                if waveform.shape[0] == 1:
+                    waveform = waveform.repeat(2, 1)
+                with torch.no_grad():
+                    packed = self.encode_audio([{"waveform": waveform[:2], "sample_rate": sample_rate}])
+                cache[key] = packed[0].detach().to("cpu", torch.float32)
+            rows.append(self._fit_audio_rows(cache[key].to(device, torch.float32), a_lat))
+        return torch.stack(rows).to(dtype)
+
+    def _build_reference_condition(
         self, batch: "DataLoaderBatchDTO", latent_shape, device, dtype
     ):
         # raw-size control tensors in [0, 1]; each is resized to the TARGET's
