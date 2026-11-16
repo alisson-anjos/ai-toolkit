@@ -143,6 +143,9 @@ def test_invalid_auxiliary_configuration(spec):
 def test_actual_condition_builder_drops_references_before_encoding():
     from minimax_h3_test_utils import packing
     class Model:
+        # helpers the upstream ref2va builder calls on self
+        _reference_pixel_size = staticmethod(lambda *a: __import__("minimax_h3_test_utils").packing.reference_pixel_size(*a))
+        _num_audio_latents = staticmethod(lambda n: __import__("minimax_h3_test_utils").packing.audio_latent_num_frames(n))
         model_config = SimpleNamespace(model_kwargs={'reference_dropout': 1.0, 'guide_dropout': 0, 'control_latent_only': True})
         _reference_dropout_probabilities = model_method('_reference_dropout_probabilities', 'MinimaxH3Ref2VAModel', dropout_probability=controls.dropout_probability)
         _image_ref_video_frames = lambda self: 0
@@ -151,7 +154,7 @@ def test_actual_condition_builder_drops_references_before_encoding():
             raise AssertionError('Dropped references must not be encoded')
     model = Model()
     batch = SimpleNamespace(control_tensor_list=[[torch.ones(3, 64, 64) for _ in range(3)]], control_video_paths_list=[], file_items=[object()])
-    build = model_method('_build_condition', 'MinimaxH3Ref2VAModel', torch=torch,
+    build = model_method('_build_reference_condition', 'MinimaxH3Ref2VAModel', torch=torch,
                          reference_keep_masks=controls.reference_keep_masks,
                          patchify_video_latents=packing.patchify_video_latents,
                          KEYFRAME_NOISE_AUG_T=packing.KEYFRAME_NOISE_AUG_T)

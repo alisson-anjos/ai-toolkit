@@ -98,6 +98,11 @@ def test_actual_validation_pipeline_forwards_geometry_and_source_channels():
         calls.append(args)
         return torch.zeros_like(args['hidden_states']),torch.zeros_like(args['audio_hidden_states'])
     model=SimpleNamespace(device_torch='cpu',torch_dtype=torch.float32,transformer=transformer,
+        _park_vae_for_denoise=lambda *a, **k: None,
+        _stage_for_sampling=lambda *a, **k: None,
+        _stage_for_decode=lambda *a, **k: None,
+        build_sample_sigmas=lambda n: __import__('minimax_h3_test_utils').packing.build_sigma_schedule(n, 12.0),
+        _num_audio_latents=lambda n: __import__('minimax_h3_test_utils').packing.audio_latent_num_frames(n),
         max_text_length=512,model_config=SimpleNamespace(model_kwargs=kw),
         _aligned_ref_flags=lambda blocks:tuple(bool(b[4]) for b in blocks),
         _reference_downscale_factor=lambda:4,

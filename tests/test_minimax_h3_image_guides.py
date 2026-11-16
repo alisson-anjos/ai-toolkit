@@ -49,6 +49,9 @@ def test_guide_role_uses_control_channel_not_first_available_image():
 def test_actual_training_builder_image_guide_and_native_identity():
     encoded = []
     class Model:
+        # helpers the upstream ref2va builder calls on self
+        _reference_pixel_size = staticmethod(lambda *a: __import__("minimax_h3_test_utils").packing.reference_pixel_size(*a))
+        _num_audio_latents = staticmethod(lambda n: __import__("minimax_h3_test_utils").packing.audio_latent_num_frames(n))
         native_temporal_options = {'enabled': False}
         model_config = NS(model_kwargs={'align_image_refs': True, 'align_video_refs': True,
                                        'guide_latent_only': True, 'reference_downscale_factor': 4})
@@ -63,7 +66,7 @@ def test_actual_training_builder_image_guide_and_native_identity():
     model = Model()
     batch = NS(control_tensor_list=[[torch.ones(3, 32, 64), torch.ones(3, 128, 128)]],
                control_video_paths_list=[], file_items=[NS(aligned_image_guide_flags=[True, False])])
-    build = model_method('_build_condition', 'MinimaxH3Ref2VAModel', torch=torch,
+    build = model_method('_build_reference_condition', 'MinimaxH3Ref2VAModel', torch=torch,
                          reference_keep_masks=controls.reference_keep_masks,
                          patchify_video_latents=packing.patchify_video_latents,
                          KEYFRAME_NOISE_AUG_T=packing.KEYFRAME_NOISE_AUG_T)
@@ -152,6 +155,9 @@ def test_sampling_encodes_image_guide_and_preserves_native_reference(tmp_path):
     image().save(guide); image().save(ref)
     received = []
     class Model:
+        # helpers the upstream ref2va builder calls on self
+        _reference_pixel_size = staticmethod(lambda *a: __import__("minimax_h3_test_utils").packing.reference_pixel_size(*a))
+        _num_audio_latents = staticmethod(lambda n: __import__("minimax_h3_test_utils").packing.audio_latent_num_frames(n))
         model = NS(device='cuda')
         guide_latent_only = True
         control_latent_only = False
@@ -165,7 +171,7 @@ def test_sampling_encodes_image_guide_and_preserves_native_reference(tmp_path):
         def encode_keyframe_latents(self, pixels):
             assert pixels.shape == (1, 3, 1, 32, 64)
             return torch.zeros(1, 24, 1, 2, 4)
-    gen = NS(width=256, height=128, num_frames=1, ctrl_img=None, ctrl_img_1=str(guide),
+    gen = NS(width=256, height=128, num_frames=1, sigmas=None, ctrl_img=None, ctrl_img_1=str(guide),
              ctrl_img_2=str(ref), ctrl_img_3=None, num_inference_steps=1,
              guidance_scale=1, latents=None)
     def pipeline(**kwargs):
