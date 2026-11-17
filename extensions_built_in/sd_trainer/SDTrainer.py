@@ -1101,6 +1101,12 @@ class SDTrainer(BaseSDTrainProcess):
                     mp = torch.nn.functional.avg_pool3d(m.float(), (1, k, k), stride=(1, k, k), ceil_mode=True)
                     scene_lf = ((lf ** 2) * mp).sum(dim=(1, 2, 3, 4)) / (mp.sum(dim=(1, 2, 3, 4)) * d.shape[1] + 1e-6)
                     scene_lf = scene_lf * lfw * valid.to(scene_lf.device, dtype=scene_lf.dtype)
+        sync_w = None
+        if len(noise_pred.shape) == 5 and hasattr(self.sd, 'sync_loss_weights'):
+            a_lat = audio_pred.shape[1] // 2 if audio_pred is not None else 0
+            sync_w = self.sd.sync_loss_weights(batch, loss.shape[2], a_lat, loss.device)
+            if sync_w is not None:
+                loss = loss * sync_w[0].to(loss.dtype).view(loss.shape[0], 1, -1, 1, 1)
         if len(noise_pred.shape) == 5:
             loss = loss.mean([1, 2, 3, 4])
         else:
@@ -1133,7 +1139,12 @@ class SDTrainer(BaseSDTrainProcess):
         
         # check for audio loss
         if audio_pred is not None and audio_target is not None:
-            audio_loss = torch.nn.functional.mse_loss(audio_pred.float(), audio_target.float(), reduction="mean")
+            if sync_w is not None and sync_w[1].shape[1] * 2 == audio_pred.shape[1]:
+                # rows are channel-major: both stereo channels share the time weights
+                aw = sync_w[1].repeat(1, 2).unsqueeze(-1)
+                audio_loss = ((audio_pred.float() - audio_target.float()) ** 2 * aw).mean()
+            else:
+                audio_loss = torch.nn.functional.mse_loss(audio_pred.float(), audio_target.float(), reduction="mean")
             audio_loss = audio_loss * self.train_config.audio_loss_multiplier
             self.additional_logs['loss/img'] = loss.item()
             self.additional_logs['loss/audio'] = audio_loss.item()

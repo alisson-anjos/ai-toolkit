@@ -37,6 +37,7 @@ Conventions bridged to ai-toolkit:
 """
 
 import os
+import json
 import random
 from functools import partial
 from typing import TYPE_CHECKING, List, Optional
@@ -1648,6 +1649,49 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
             stem = os.path.join(folder, os.path.basename(stem))
         return stem + suffix
 
+    def sync_loss_weights(self, batch, num_video_latents, num_audio_latents, device):
+        """Per-time loss weights that stress the frames around each guide event.
+
+        model_kwargs.sync_loss = {weight: 3.0, sigma: 0.08, suffix: "_events.json"}. Events are the
+        seconds of each event in the target (written next to the guide). Returns (video (B, T),
+        audio (B, a_lat)) normalised to mean 1, or None when off, when the guide was dropped for this
+        step, or when an item has no events file.
+        """
+        cfg = self.model_config.model_kwargs.get("sync_loss")
+        if not cfg or batch is None or not batch.file_items or not getattr(self, "_audio_guide_used", False):
+            return None
+        weight = float(cfg.get("weight", 3.0))
+        sigma = float(cfg.get("sigma", 0.08))
+        suffix = cfg.get("suffix", "_events.json")
+        num_frames = getattr(batch, "num_frames", 1) or 1
+        seconds = num_frames / packing.FPS
+        vids, auds = [], []
+        for item in batch.file_items:
+            path = self._audio_guide_path(item, suffix)
+            if not os.path.exists(path):
+                return None
+            with open(path) as f:
+                events = torch.tensor([float(t) for t in json.load(f) if float(t) < seconds], dtype=torch.float32)
+
+            def bumps(times):
+                if events.numel() == 0:
+                    return torch.ones_like(times)
+                d = times[:, None] - events[None, :]
+                g = torch.exp(-0.5 * (d / sigma) ** 2).amax(dim=1)
+                w = 1.0 + (weight - 1.0) * g
+                return w / w.mean()
+
+            # video latent 0 is frame 0, latent i>0 covers 4 frames ending at frame 4i
+            t_v = torch.tensor([0.0] + [(4 * i - 1.5) / packing.FPS for i in range(1, num_video_latents)])
+            t_a = (torch.arange(num_audio_latents, dtype=torch.float32) + 0.5) / packing.AUDIO_LATENTS_PER_SECOND
+            vids.append(bumps(t_v))
+            auds.append(bumps(t_a))
+        if not getattr(self, "_sync_loss_logged", False):
+            print(f"[H3 sync loss] weight {weight} sigma {sigma}s; video {num_video_latents} latents, "
+                  f"audio {num_audio_latents}; first events {events.tolist()[:6]}", flush=True)
+            self._sync_loss_logged = True
+        return torch.stack(vids).to(device), torch.stack(auds).to(device)
+
     def _audio_guide_rows(self, batch, device, dtype):
         """Clean packed rows (B, 2*a_lat, 32) of each item's guide sound, or None.
 
@@ -1661,6 +1705,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         num_frames = getattr(batch, "num_frames", 1) or 1
         if num_frames <= 1:
             return None
+        self._audio_guide_used = False
         if opts["dropout"] and random.random() < opts["dropout"]:
             return None
         paths = [self._audio_guide_path(item, opts["suffix"]) for item in batch.file_items]
@@ -1688,6 +1733,7 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
                 cache[key] = packed[0].detach().to("cpu", torch.float32)
             rows.append(self._fit_audio_rows(cache[key].to(device, torch.float32), a_lat))
         out = torch.stack(rows).to(dtype)
+        self._audio_guide_used = True
         if not getattr(self, "_audio_guide_logged", False):
             print(f"[H3 audio guide] {tuple(out.shape)} clean rows at frame 0 from {paths[0]}", flush=True)
             self._audio_guide_logged = True
