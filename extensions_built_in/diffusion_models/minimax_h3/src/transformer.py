@@ -37,6 +37,7 @@ import torch.nn.functional as F
 from torch import nn
 from toolkit.h3_reference_rope import add_source_phase
 from toolkit import h3_native_temporal as native_temporal
+from . import regional_attention
 from torch.utils.checkpoint import checkpoint
 
 MODALITY_NUM = 3  # 0 = video, 1 = text, 2 = audio; -1 marks padding rows
@@ -208,7 +209,12 @@ class MiniMaxH3Attention(nn.Module):
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
-        if isinstance(attn_mask, native_temporal.TemporalContext):
+        out = None
+        if regional_attention.CTX is not None and not isinstance(attn_mask, native_temporal.TemporalContext):
+            out = regional_attention.maybe_attend(self, q, k, v, attn_mask)   # attention-routed face swap training
+        if out is not None:
+            pass
+        elif isinstance(attn_mask, native_temporal.TemporalContext):
             out = native_temporal.attention(q, k, v, attn_mask)
         else:
             out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)

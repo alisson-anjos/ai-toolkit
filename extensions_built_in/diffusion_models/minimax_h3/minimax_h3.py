@@ -1206,6 +1206,7 @@ class MinimaxH3Model(BaseModel):
             if cond_rows is not None:
                 video_rows = torch.cat([cond_rows, video_rows], dim=1)
 
+        self._set_regional_context(layouts, ref_blocks, text_tag_list, batch, batch_size)
         video_pred, audio_pred = self.model(
             hidden_states=video_rows,
             audio_hidden_states=audio_rows.to(dtype),
@@ -1238,6 +1239,24 @@ class MinimaxH3Model(BaseModel):
         return self.audio_stream_output(
             -noise_pred, -audio_pred, audio_target, noisy_audio_rows, sigma_a, audio_stream
         )
+
+    def _set_regional_context(self, layouts, ref_blocks, text_tag_list, batch, batch_size):
+        """Attention-routed face swap training (src/regional_attention.py): the soft picture-routing bias of the
+        ComfyUI node BFS H3 Regional Reference Attention, from model_kwargs.regional_attention."""
+        from .src import regional_attention as ra
+        cfg = self.model_config.model_kwargs.get("regional_attention")
+        ra.CTX = None
+        if not cfg or not torch.is_grad_enabled() or batch is None or batch_size != 1 or not batch.file_items:
+            return
+        net = unwrap_model(self.model)
+        if not getattr(net, "_ra_tagged", False):
+            ra.tag_layers(net); net._ra_tagged = True
+        num_frames = int(getattr(batch, "num_frames", 0) or 0) or 10 ** 6
+        ra.CTX = ra.make_context(cfg if isinstance(cfg, dict) else {}, layouts[0], ref_blocks, text_tag_list[0],
+                                 batch.file_items[0].path, num_frames)
+        if ra.CTX is None and not getattr(self, "_ra_skip_logged", False):
+            print(f"[H3 regional attention] no routing for {batch.file_items[0].path} (seeds / pictures mismatch)", flush=True)
+            self._ra_skip_logged = True
 
     def _pdd_weights(self, sigma_v, sigma_v_next=None):
         """Head weights for PDD checkpoints (None otherwise). Training passes a
